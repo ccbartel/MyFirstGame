@@ -12,11 +12,12 @@
   :root[data-theme="dark"] { --pad-bg: rgba(0,0,0,.35); --pad-fg: #f1f4f8; }
   html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bg); }
   canvas { display: block; width: 100%; height: 100%; touch-action: none; }
-  .pad { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-         display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 56px); gap: 8px; user-select: none; }
-  .pad button { border: 0; border-radius: 14px; background: var(--pad-bg); color: var(--pad-fg);
-                font-size: 24px; backdrop-filter: blur(6px); -webkit-tap-highlight-color: transparent; }
-  .pad button:active, .jump:active { transform: scale(.94); }
+  .stick { position: fixed; right: 20px; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); width: 140px; height: 140px;
+           border-radius: 50%; background: var(--pad-bg); box-shadow: inset 0 0 0 2px rgba(127,127,127,.35); backdrop-filter: blur(6px);
+           touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+  .stick i { position: absolute; left: 50%; top: 50%; width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%;
+             background: var(--pad-fg); opacity: .55; pointer-events: none; will-change: transform; }
+  .jump:active { transform: scale(.94); }
   .jump { position: fixed; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); width: 72px; height: 72px;
           border: 0; border-radius: 50%; background: var(--pad-bg); color: var(--pad-fg); font-size: 30px;
           backdrop-filter: blur(6px); user-select: none; -webkit-tap-highlight-color: transparent; }
@@ -34,7 +35,7 @@
   .edit.on { background: #ffd23f; color: #222; }
   .run { position: fixed; left: 24px; bottom: calc(98px + env(safe-area-inset-bottom, 0px)); width: 56px; height: 56px; border: 0; border-radius: 50%; background: var(--pad-bg); color: var(--pad-fg); font-size: 26px; backdrop-filter: blur(6px); user-select: none; -webkit-tap-highlight-color: transparent; }
   .run:active { transform: scale(.94); }
-  body.editing .pad, body.editing .jump, body.editing .run { display: none; }
+  body.editing .stick, body.editing .jump, body.editing .run { display: none; }
   .tools { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 96vw; }
   .tools[hidden], .tools .row[hidden] { display: none; }
   .tools .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding: 6px; border-radius: 16px; background: var(--pad-bg); backdrop-filter: blur(8px); }
@@ -45,8 +46,6 @@
   @keyframes bump { 50% { transform: scale(1.22); } }
   .reset { position: fixed; top: calc(14px + env(safe-area-inset-top, 0px)); right: 16px; width: 46px; height: 46px; border: 0; border-radius: 50%; background: var(--pad-bg); color: var(--pad-fg); font-size: 24px; backdrop-filter: blur(6px); -webkit-tap-highlight-color: transparent; }
   .reset:active { transform: scale(.92); }
-  .up { grid-column: 2; grid-row: 1; } .left { grid-column: 1; grid-row: 2; }
-  .down { grid-column: 2; grid-row: 2; } .right { grid-column: 3; grid-row: 2; }
 </style>
 </head>
 <body>
@@ -60,12 +59,7 @@
 <button class="edit" id="edit">✎</button>
 <div class="tools" id="tools" hidden></div>
 <textarea id="out" hidden readonly></textarea>
-<div class="pad">
-  <button class="up" data-k="ArrowUp">▲</button>
-  <button class="left" data-k="ArrowLeft">◀</button>
-  <button class="down" data-k="ArrowDown">▼</button>
-  <button class="right" data-k="ArrowRight">▶</button>
-</div>
+<div class="stick" id="stick"><i></i></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
@@ -366,13 +360,36 @@
   window.addEventListener('keydown', e => { if (used.includes(e.key)) { keys[e.key] = true; e.preventDefault(); } });
   window.addEventListener('keyup', e => { if (used.includes(e.key)) keys[e.key] = false; });
   window.addEventListener('blur', () => used.forEach(k => keys[k] = false));
-  document.querySelectorAll('.pad button, .jump, .run').forEach(b => {
+  document.querySelectorAll('.jump, .run').forEach(b => {
     const k = b.dataset.k;
     const on = e => { e.preventDefault(); keys[k] = true; };
     const off = e => { e.preventDefault(); keys[k] = false; };
     b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off);
     b.addEventListener('pointerleave', off); b.addEventListener('pointercancel', off);
   });
+
+  // stick analogico virtual: direcao + intensidade (0 a 1, com zona morta)
+  const stick = { dx: 0, dz: 0, m: 0 };
+  const stickEl = document.getElementById('stick'), knob = stickEl.firstElementChild;
+  let stickId = null;
+  function stickReset() { stickId = null; stick.dx = stick.dz = stick.m = 0; knob.style.transform = ''; }
+  function stickMove(e) {
+    const r = stickEl.getBoundingClientRect(), half = r.width / 2;
+    const x = e.clientX - (r.left + half), y = e.clientY - (r.top + half);
+    const d = Math.hypot(x, y), lim = half - 22, k = d > lim ? lim / d : 1, DZ = 0.15;
+    knob.style.transform = 'translate(' + (x * k) + 'px,' + (y * k) + 'px)';
+    const m = Math.min(d / lim, 1);
+    if (m < DZ) { stick.dx = stick.dz = stick.m = 0; }
+    else { stick.m = (m - DZ) / (1 - DZ); stick.dx = x / d; stick.dz = y / d; }
+  }
+  stickEl.addEventListener('pointerdown', e => {
+    if (stickId !== null) return;
+    e.preventDefault(); stickId = e.pointerId; stickEl.setPointerCapture(e.pointerId); stickMove(e);
+  });
+  stickEl.addEventListener('pointermove', e => { if (e.pointerId === stickId) stickMove(e); });
+  const stickEnd = e => { if (e.pointerId === stickId) stickReset(); };
+  stickEl.addEventListener('pointerup', stickEnd); stickEl.addEventListener('pointercancel', stickEnd);
+  window.addEventListener('blur', stickReset);
 
   function resize() {
     const w = window.innerWidth, h = window.innerHeight;
@@ -525,7 +542,7 @@
   }
   function setEdit(on) {
     editing = on; document.body.classList.toggle('editing', on); silMats.forEach(m => { m.visible = false; }); toolsEl.hidden = !on; editBtn.classList.toggle('on', on);
-    used.forEach(k => { keys[k] = false; });
+    used.forEach(k => { keys[k] = false; }); stickReset();
     if (on) { tuneEl.hidden = true; } else { sel = null; drag = null; updateSel(); refreshActions(); outEl.hidden = true; reset(); }
   }
   editBtn.addEventListener('click', e => { setEdit(!editing); e.currentTarget.blur(); });
@@ -576,13 +593,15 @@
     const dt = Math.min(clock.getDelta(), 0.05), time = clock.elapsedTime;
     if (editing) { editStep(dt); renderer.render(scene, camera); requestAnimationFrame(tick); return; }
     dir.set((keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0), 0, (keys.ArrowDown ? 1 : 0) - (keys.ArrowUp ? 1 : 0));
+    let mag = 1;
     if (dir.lengthSq() > 0) dir.normalize();
+    else if (stick.m > 0) { dir.set(stick.dx, 0, stick.dz); mag = stick.m; }
     const hasIn = dir.lengthSq() > 0;
     const sp0 = Math.hypot(vel.x, vel.z);
     const opposing = hasIn && sp0 > 0.5 && (vel.x * dir.x + vel.z * dir.z) < -0.2 * sp0;
     skid = opposing && !air && sp0 > 3;
     const rate = (!hasIn ? FRICTION : opposing ? BRAKE : ACCEL) * (air ? 0.6 : 1);
-    dir.multiplyScalar(keys.Shift ? SPEED : WALK);
+    dir.multiplyScalar((keys.Shift ? SPEED : WALK) * mag);
     const dx = dir.x - vel.x, dz = dir.z - vel.z, dl = Math.hypot(dx, dz), step = rate * dt;
     if (dl <= step) { vel.x = dir.x; vel.z = dir.z; } else { vel.x += dx / dl * step; vel.z += dz / dl * step; }
 
