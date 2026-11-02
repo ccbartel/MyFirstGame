@@ -90,6 +90,21 @@
   body.touch #toast { font-size: 28px; padding: 10px 26px; }
   body.touch .chip { font-size: 22px; }
   body.touch #again { font-size: 28px; padding: 14px 38px; }
+  /* Celular em pe: HUD menor e cronometro no canto direito para nao sobrepor */
+  @media (orientation: portrait) {
+    body.touch #coins { min-width: 0; gap: 8px; padding: 6px 14px 6px 8px; }
+    body.touch #coins .dia { width: 36px; height: 36px; }
+    body.touch #coinN { font-size: 28px; }
+    body.touch #coinT { font-size: 16px; }
+    body.touch .prog { height: 12px; margin-top: 5px; }
+    body.touch #timer { left: auto; right: calc(12px + var(--safe-r)); transform: none; font-size: 28px; gap: 6px; padding: 5px 14px 5px 9px; }
+    body.touch #timer svg { width: 28px; height: 28px; }
+    body.touch #timer.low { animation: tp2 .5s infinite alternate; }
+    body.touch #lives { top: calc(82px + var(--safe-t)); }
+    body.touch #lives svg { width: 28px; height: 28px; }
+    body.touch #toast { font-size: 20px; }
+  }
+  @keyframes tp2 { from { transform: scale(1); } to { transform: scale(1.09); } }
   @media (prefers-reduced-motion: reduce) { #start { transition: none; } }
 </style>
 
