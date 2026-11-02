@@ -60,7 +60,7 @@
   #knob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; background: rgba(255,253,244,.92); border: 3px solid var(--ink); box-shadow: 0 3px 0 rgba(29,59,42,.35); }
   .btn { position: absolute; border-radius: 50%; border: 3px solid var(--ink); font-family: var(--font); font-weight: 700; color: var(--ink); pointer-events: auto; touch-action: none; box-shadow: 0 4px 0 rgba(29,59,42,.4); display: flex; align-items: center; justify-content: center; text-align: center; line-height: 1; }
   #bJump { right: calc(26px + env(safe-area-inset-right, 0px)); bottom: calc(40px + env(safe-area-inset-bottom, 0px)); width: 104px; height: 104px; background: var(--orange); font-size: 20px; }
-  #bRun { right: calc(144px + env(safe-area-inset-right, 0px)); bottom: calc(26px + env(safe-area-inset-bottom, 0px)); width: 80px; height: 80px; background: rgba(255,253,244,.85); font-size: 15px; }
+  #bRun { right: calc(38px + env(safe-area-inset-right, 0px)); bottom: calc(158px + env(safe-area-inset-bottom, 0px)); width: 80px; height: 80px; background: rgba(255,253,244,.85); font-size: 15px; }
   #bRun.on { background: var(--grass); }
   .btn:active, .btn.down { transform: translateY(3px); box-shadow: 0 1px 0 rgba(29,59,42,.4); }
   #start { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: linear-gradient(#7cc8ff, #d9f1ff 60%, #b6e88a 60%, #6fcb45); text-align: center; padding: 24px; transition: opacity .35s; }
@@ -76,20 +76,20 @@
   #bar { width: min(280px, 70vw); height: 12px; border: 3px solid var(--ink); border-radius: 99px; background: var(--paper); overflow: hidden; }
   #bar i { display: block; height: 100%; width: 0; background: var(--grass); transition: width .2s; }
   #toast { position: fixed; z-index: 7; left: 50%; top: 22%; transform: translateX(-50%); font-size: 24px; font-weight: 700; color: var(--paper); background: rgba(29,59,42,.82); padding: 8px 22px; border-radius: 999px; border: 3px solid var(--paper); box-shadow: 0 4px 0 rgba(29,59,42,.3); max-width: 86vw; opacity: 0; transition: opacity .3s; pointer-events: none; text-align: center; }
-  @media (max-width: 560px) { #stick { width: 130px; height: 130px; } #bJump { width: 92px; height: 92px; } #bRun { right: calc(126px + env(safe-area-inset-right, 0px)); width: 72px; height: 72px; } }
-  /* Celular: HUD maior para leitura com o polegar livre */
-  body.touch #coins { top: calc(10px + var(--safe-t)); left: calc(12px + var(--safe-l)); gap: 12px; padding: 10px 20px 10px 12px; min-width: 190px; border-radius: 24px; }
-  body.touch #coins .dia { width: 50px; height: 50px; }
-  body.touch #coinN { font-size: 40px; }
-  body.touch #coinT { font-size: 22px; }
-  body.touch .prog { height: 16px; margin-top: 8px; }
-  body.touch #timer { top: calc(10px + var(--safe-t)); font-size: 40px; gap: 10px; padding: 8px 22px 8px 14px; border-radius: 24px; }
-  body.touch #timer svg { width: 38px; height: 38px; }
-  body.touch #lives { top: calc(112px + var(--safe-t)); left: calc(12px + var(--safe-l)); padding: 6px 14px; }
-  body.touch #lives svg { width: 34px; height: 34px; }
-  body.touch #toast { font-size: 28px; padding: 10px 26px; }
-  body.touch .chip { font-size: 22px; }
-  body.touch #again { font-size: 28px; padding: 14px 38px; }
+  @media (max-width: 560px) { #stick { width: 130px; height: 130px; } #bJump { width: 92px; height: 92px; } #bRun { right: calc(36px + env(safe-area-inset-right, 0px)); bottom: calc(144px + env(safe-area-inset-bottom, 0px)); width: 72px; height: 72px; } }
+  /* Celular (deitado): HUD de tamanho medio */
+  body.touch #coins { top: calc(8px + var(--safe-t)); left: calc(12px + var(--safe-l)); gap: 9px; padding: 7px 16px 7px 9px; min-width: 150px; border-radius: 20px; }
+  body.touch #coins .dia { width: 40px; height: 40px; }
+  body.touch #coinN { font-size: 30px; }
+  body.touch #coinT { font-size: 17px; }
+  body.touch .prog { height: 13px; margin-top: 6px; }
+  body.touch #timer { top: calc(8px + var(--safe-t)); font-size: 30px; gap: 8px; padding: 5px 16px 5px 11px; border-radius: 20px; }
+  body.touch #timer svg { width: 30px; height: 30px; }
+  body.touch #lives { top: calc(84px + var(--safe-t)); left: calc(12px + var(--safe-l)); padding: 4px 12px; }
+  body.touch #lives svg { width: 28px; height: 28px; }
+  body.touch #toast { font-size: 24px; padding: 8px 22px; }
+  body.touch .chip { font-size: 20px; }
+  body.touch #again { font-size: 26px; padding: 12px 34px; }
   /* Celular em pe: HUD menor e cronometro no canto direito para nao sobrepor */
   @media (orientation: portrait) {
     body.touch #coins { min-width: 0; gap: 8px; padding: 6px 14px 6px 8px; }
@@ -185,7 +185,7 @@
   })();
   scene.fog = new THREE.Fog(SKY, 70, 210);
   var camera = new THREE.PerspectiveCamera(55, 1, 0.1, 400);
-  scene.add(new THREE.HemisphereLight(0xf2f8ff, 0x9bb866, 0.95));
+  scene.add(new THREE.HemisphereLight(0xf2f8ff, 0x9bb866, 0.85));
   var sun = new THREE.DirectionalLight(0xfff3da, 0.7);
   sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
   var sc = sun.shadow.camera; sc.left = -32; sc.right = 32; sc.top = 32; sc.bottom = -32; sc.near = 1; sc.far = 140;
@@ -253,7 +253,7 @@
     }
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     var uv = geo.attributes.uv; for (var k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * 4, uv.getY(k) * 4);
-    var m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: grassTex }));
+    var m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: grassTex, color: 0xd0d0d0 }));
     m.receiveShadow = true; scene.add(m);
   })();
 
@@ -409,7 +409,7 @@
 
   /* ---------- diamantes ---------- */
   var coins = [], coinGeo = new THREE.OctahedronGeometry(0.5, 0); coinGeo.scale(0.78, 1.3, 0.78);
-  var coinMat = new THREE.MeshLambertMaterial({ color: 0x4fdcf7, emissive: 0x0b6a85, flatShading: true });
+  var coinMat = new THREE.MeshLambertMaterial({ color: 0x35b8d6, emissive: 0x06465a, flatShading: true });
   function addCoin(x, y, z) {
     var m = new THREE.Mesh(coinGeo, coinMat); m.position.set(x, y, z); m.castShadow = true; scene.add(m);
     coins.push({ m: m, x: x, y: y, z: z, got: false, t: 0, ph: rnd() * 6 });
