@@ -461,7 +461,7 @@
         var bin = atob(window.__MUSIC), u = new Uint8Array(bin.length);
         for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
         music = new Audio(URL.createObjectURL(new Blob([u], { type: 'audio/mpeg' })));
-        music.loop = true; music.volume = 0.32; music.preload = 'auto';
+        music.loop = true; music.volume = 0.2; music.preload = 'auto';
       }
       music.muted = muted;
       if (music.paused) { var pr = music.play(); if (pr && pr.catch) pr.catch(function () {}); }
@@ -539,7 +539,7 @@
   window.addEventListener('keyup', function (e) { var k = e.key.length === 1 ? e.key.toLowerCase() : e.key; keys[k] = false; });
   window.addEventListener('blur', function () { keys = {}; });
 
-  /* mouse (PC): camera segue o movimento do mouse, sem segurar botao (pointer lock; Esc solta) */
+  /* mouse (PC): segurar o botao esquerdo e arrastar gira a camera (mesmo codigo do toque) */
   var look = false, locked = false;
   function lookMove(dx, dy) {
     cam.yaw -= dx * 0.0035; cam.pitch = clamp(cam.pitch + dy * 0.003, 0.05, 1.25);
@@ -558,13 +558,7 @@
   var drag = null;
   canvas.addEventListener('pointerdown', function (e) {
     canvas.focus();
-    if (e.pointerType === 'mouse' && !isTouch) {
-      if (!locked) {
-        look = !look; /* fallback se o lock for bloqueado: clique alterna */
-        try { var p = canvas.requestPointerLock && canvas.requestPointerLock(); if (p && p.catch) p.catch(function () {}); } catch (er) {}
-      }
-      return;
-    }
+    if (e.pointerType === 'mouse' && e.button !== 0) return; /* camera: segurar o botao ESQUERDO e arrastar */
     if (drag) return;
     drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
     try { canvas.setPointerCapture(e.pointerId); } catch (er) {}
@@ -1056,7 +1050,7 @@
   requestAnimationFrame(frame);
 
   $('go').addEventListener('click', function () {
-    started = true; $('start').classList.add('gone'); canvas.focus(); if (!isTouch) toast('Clique na tela e mova o mouse para girar a câmera (Esc solta)');
+    started = true; $('start').classList.add('gone'); canvas.focus(); if (!isTouch) toast('Segure o botão esquerdo e arraste para girar a câmera');
   });
   window.addEventListener('keydown', function (e) { if (!started && (e.key === 'Enter') && !$('go').disabled) $('go').click(); });
 
