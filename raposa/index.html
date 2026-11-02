@@ -582,7 +582,7 @@
     }
     return CG.map[Math.floor(x / CG.cell) * 4096 + Math.floor(z / CG.cell)] || EMPTY;
   }
-  var WALK = 4.2, RUN = 9.0, GRAV = 32, JUMP = 12.6, JUMP2 = 11.2;
+  var WALK = 4.2, RUN = 7.2, GRAV = 32, JUMP = 12.6, JUMP2 = 11.2;
   function groundAt(x, z, y) {
     var g = ground(x, z), top = -1e9, which = null;
     for (var i = 0; i < boxes.length; i++) {
