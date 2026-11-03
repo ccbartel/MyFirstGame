@@ -502,7 +502,7 @@
           var y = ground(x, z), gx = (ground(x + 0.5, z) - y) * 2, gz = (ground(x, z + 0.5) - y) * 2, il = 1 / Math.sqrt(gx * gx + 1 + gz * gz);
           if (il < 0.84 || J.n >= MAXN) continue;
           var r3 = hs(i, j, 3), r4 = hs(i, j, 4), r5 = hs(i, j, 5);
-          var clump = 0.5 + 0.95 * sn(x * 0.5, z * 0.5), hue = sn(x * 0.07 + 3, z * 0.07 + 3), fl = sn(x * 0.28 + 7, z * 0.28 + 7) * 6.283, patch = 0.76 + 0.4 * sn(x * 0.045 + 11, z * 0.045 + 11);
+          var clump = 0.5 + 0.95 * sn(x * 0.5, z * 0.5), hue = sn(x * 0.07 + 3, z * 0.07 + 3), fl = sn(x * 0.28 + 7, z * 0.28 + 7) * 6.283, patch = 0.84 + 0.38 * sn(x * 0.045 + 11, z * 0.045 + 11);
           var sh = 0;
           for (var ci = 0; ci < J.cs.length; ci++) {
             var c = J.cs[ci], v;
@@ -512,7 +512,7 @@
           }
           sh = sh * sh * (3 - 2 * sh);
           var h = Z.near ? (0.26 + 0.36 * r3) * clump : (0.36 + 0.4 * r3) * clump, w = Z.near ? 0.1 + 0.05 * r4 : 0.19 + 0.08 * r4;
-          var nx = -gx * il, ny = il, nz = -gz * il, sf = Math.max(nx * -0.4 + ny * 0.8 + nz * 0.33, 0), lit = 0.62 + 0.38 * sf;
+          var nx = -gx * il, ny = il, nz = -gz * il, sf = Math.max(nx * -0.4 + ny * 0.8 + nz * 0.33, 0), lit = 0.72 + 0.28 * sf;
           var m = (0.88 + 0.24 * r4) * patch * lit * (1 - 0.5 * sh);
           var slot = J.n; if (J.n > 0) { var rj = (Math.random() * (J.n + 1)) | 0; if (rj < J.n) { var a4 = rj * 4, b4 = J.n * 4; sP[b4] = sP[a4]; sP[b4 + 1] = sP[a4 + 1]; sP[b4 + 2] = sP[a4 + 2]; sP[b4 + 3] = sP[a4 + 3]; sS[b4] = sS[a4]; sS[b4 + 1] = sS[a4 + 1]; sS[b4 + 2] = sS[a4 + 2]; sS[b4 + 3] = sS[a4 + 3]; sC[b4] = sC[a4]; sC[b4 + 1] = sC[a4 + 1]; sC[b4 + 2] = sC[a4 + 2]; sC[b4 + 3] = sC[a4 + 3]; slot = rj; } }
           var o = slot * 4;
@@ -550,7 +550,7 @@
     };
     var hm = /g(\d+)/.exec(location.hash); if (/nogov/.test(location.hash)) window.__noGov = true;
     if (hm) { var gv = +hm[1] / 10; if (gv <= 0) gOff = true; else q = Math.min(1, gv); }
-    window.__shell = { info: function () { return curN + ' laminas (' + Math.round(q * 100) + '%)' + (gOff ? ' DESLIGADA' : '') + (gLog.length ? ' cortou: ' + gLog.join(',') : ''); }, setQ: function (v) { q = v; apply(); }, setOff: function (v) { gOff = !!v; apply(); } };
+    window.__shell = { info: function () { return curN + ' laminas (' + Math.round(q * 100) + '%)' + (gOff ? ' DESLIGADA' : '') + (gLog.length ? ' cortou: ' + gLog.join(',') : ''); }, setQ: function (v) { q = v; apply(); }, setOff: function (v) { gOff = !!v; apply(); }, isOff: function () { return gOff; }, busy: function () { return !!job; } };
     window.__grassUpd(START.x, START.z, 0);
   })();
 
@@ -1378,15 +1378,23 @@
 
 
   (function fpsBadge() {
-    var el = document.createElement('div'), on = false, acc2 = 0, n2 = 0, lastT = 0, taps = [];
+    var el = document.createElement('div'), bt = document.createElement('button'), on = false, acc2 = 0, n2 = 0, lastT = 0, taps = [], hist = [];
     el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:60;background:rgba(0,0,0,.7);color:#fff;font:600 13px/1.35 monospace;padding:6px 9px;border-radius:8px;white-space:pre;pointer-events:none;display:none';
-    document.body.appendChild(el);
-    function tog() { on = !on; el.style.display = on ? 'block' : 'none'; }
+    bt.style.cssText = 'position:fixed;left:50%;top:104px;transform:translateX(-50%);z-index:61;background:#1d3b2a;color:#fff;border:2px solid #fff;border-radius:18px;font:700 14px/1 sans-serif;padding:9px 14px;display:none;touch-action:manipulation';
+    bt.textContent = 'Grama: ligada';
+    bt.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+    bt.addEventListener('click', function (e) { var g = window.__shell; if (!g) return; g.setOff(!g.isOff()); bt.textContent = g.isOff() ? 'Grama: DESLIGADA' : 'Grama: ligada'; e.stopPropagation(); });
+    document.body.appendChild(el); document.body.appendChild(bt);
+    function tog() { on = !on; el.style.display = on ? 'block' : 'none'; bt.style.display = on ? 'block' : 'none'; }
     window.addEventListener('keydown', function (e) { if (e.key === 'f' || e.key === 'F') tog(); });
     window.addEventListener('pointerdown', function (e) { if (e.clientY < 90 && Math.abs(e.clientX - innerWidth / 2) < 120) { var n = performance.now(); taps = taps.filter(function (x) { return n - x < 900; }); taps.push(n); if (taps.length >= 3) { taps = []; tog(); } } });
     window.__fpsTick = function (now) {
-      if (lastT) { acc2 += now - lastT; n2++; } lastT = now;
-      if (on && acc2 > 500) { var g = window.__shell; el.textContent = (1000 / (acc2 / n2)).toFixed(0) + ' fps  ' + (acc2 / n2).toFixed(1) + ' ms  dpr ' + renderer.getPixelRatio() + '  ' + innerWidth + 'x' + innerHeight + (g ? '\ngrama: ' + g.info() : ''); acc2 = 0; n2 = 0; }
+      if (lastT) { var dt = now - lastT; acc2 += dt; n2++; hist.push(now, dt); if (hist.length > 2400) hist.splice(0, hist.length - 1600); } lastT = now;
+      if (on && acc2 > 500) {
+        var mx = 0, bad = 0; for (var h = 0; h < hist.length; h += 2) if (now - hist[h] < 5000) { if (hist[h + 1] > mx) mx = hist[h + 1]; if (hist[h + 1] > 25) bad++; }
+        var g = window.__shell;
+        el.textContent = (1000 / (acc2 / n2)).toFixed(0) + ' fps  ' + (acc2 / n2).toFixed(1) + ' ms  dpr ' + renderer.getPixelRatio() + '  ' + innerWidth + 'x' + innerHeight + '\n5 s: pior ' + mx.toFixed(0) + ' ms, ' + bad + ' quadros >25 ms' + (g ? '\ngrama: ' + g.info() + (g.busy() ? '  [recalculando]' : '') : ''); acc2 = 0; n2 = 0;
+      }
     };
   })();
 
