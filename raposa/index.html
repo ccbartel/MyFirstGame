@@ -270,7 +270,7 @@
     for (var i = 0; i < pos.count; i++) pos.setY(i, groundRaw(pos.getX(i), pos.getZ(i)));
     geo.computeVertexNormals();
     var nor = geo.attributes.normal, col = new Float32Array(pos.count * 3);
-    var gA = new THREE.Color('#4a9a2a'), gB = new THREE.Color('#8fcc40'), gC = new THREE.Color('#2f7a24'), dirt = new THREE.Color('#9a6a3b'), tmp = new THREE.Color();
+    var gA = new THREE.Color('#3f8627'), gB = new THREE.Color('#78b43a'), gC = new THREE.Color('#2f7a24'), dirt = new THREE.Color('#9a6a3b'), tmp = new THREE.Color();
     for (var j = 0; j < pos.count; j++) {
       var x = pos.getX(j), z = pos.getZ(j);
       var stripe = 0.5 + 0.5 * Math.sin((x * 0.7 + z * 0.35) * 0.9);
@@ -454,90 +454,104 @@
     scene.add(inst); window.__tufts = n;
   })();
 
-  /* grama em camadas (shell): 1 draw call instanciado, nenhuma textura, só ao redor do jogador */
-  (function shellGrass() {
-    var L = isTouch ? 8 : 14, S = isTouch ? 34 : 48, SEG = S, R = isTouch ? 15 : 22, HGT = 0.64, DENS = isTouch ? 9 : 11;
-    var plane = new THREE.PlaneGeometry(S, S, SEG, SEG); plane.rotateX(-Math.PI / 2);
+  /* grama: lâminas reais instanciadas (fita de 5 triângulos, sem discard, sem transparência), geradas por célula de mundo ao redor do jogador;
+     perto = muitas lâminas finas, longe = poucas e largas; recalculada aos poucos em vários quadros */
+  (function bladeGrass() {
+    var ND = isTouch ? 32 : 60, NR = isTouch ? 6 : 9, FD = isTouch ? 6 : 10, R = isTouch ? 16 : 24, MARG = 5, W = R + MARG, NRc = NR + 3;
+    var MAXN = Math.ceil((Math.PI * NRc * NRc * ND + Math.PI * (W * W - NRc * NRc) * FD) * 1.12);
+    var tv = new Float32Array([-0.5, 0, 0.5, 0, -0.41, 0.42, 0.41, 0.42, -0.25, 0.78, 0.25, 0.78, 0, 1]), tvp = new Float32Array(7 * 3);
+    for (var q0 = 0; q0 < 7; q0++) { tvp[q0 * 3] = tv[q0 * 2]; tvp[q0 * 3 + 1] = tv[q0 * 2 + 1]; }
     var geo = new THREE.InstancedBufferGeometry();
-    geo.index = plane.index;
-    var posA = new THREE.BufferAttribute(new Float32Array(plane.attributes.position.array), 3); posA.setUsage(THREE.DynamicDrawUsage);
-    var norA = new THREE.BufferAttribute(new Float32Array(plane.attributes.normal.array), 3); norA.setUsage(THREE.DynamicDrawUsage);
-    geo.setAttribute('position', posA); geo.setAttribute('normal', norA);
-    var lay = new Float32Array(L); for (var li = 0; li < L; li++) lay[li] = li;
-    geo.setAttribute('layer', new THREE.InstancedBufferAttribute(lay, 1));
-    geo.instanceCount = L;
-    var U = { uH: { value: HGT }, uL: { value: L }, uSun: { value: SUNDIR.clone() }, uPl: { value: new THREE.Vector3() }, uR: { value: R }, uD: { value: DENS }, uT: { value: 0 }, uWind: { value: (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : 1 } };
+    geo.setAttribute('position', new THREE.BufferAttribute(tvp, 3));
+    geo.setIndex([0, 1, 3, 0, 3, 2, 2, 3, 5, 2, 5, 4, 4, 5, 6]);
+    var aP = new THREE.InstancedBufferAttribute(new Float32Array(MAXN * 4), 4), aS = new THREE.InstancedBufferAttribute(new Float32Array(MAXN * 4), 4), aC = new THREE.InstancedBufferAttribute(new Float32Array(MAXN * 4), 4);
+    aP.setUsage(THREE.DynamicDrawUsage); aS.setUsage(THREE.DynamicDrawUsage); aC.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('aP', aP); geo.setAttribute('aS', aS); geo.setAttribute('aC', aC);
+    geo.instanceCount = 0;
+    var U = { uPl: { value: new THREE.Vector3() }, uR: { value: R }, uT: { value: 0 }, uWind: { value: (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : 1 } };
     var mat = new THREE.ShaderMaterial({ uniforms: U, side: THREE.DoubleSide,
-      vertexShader: "attribute float layer; uniform float uH, uL, uT, uWind; varying vec2 vW; varying float vT; varying vec3 vN; varying vec3 vK;\n" +
-        "float sn(vec2 p){ return 0.5+0.5*sin(p.x*1.7+sin(p.y*1.3)*2.0)*cos(p.y*1.5+sin(p.x*1.1)*2.0); }\n" +
-        "void main(){ float t=(layer+1.0)/uL; vec3 p=position+normalize(normal)*uH*t; float tt=t*t;\n" +
-        "vec2 lean=vec2(sin(p.x*0.21+p.z*0.13+1.3), cos(p.z*0.19-p.x*0.11))*0.18*tt;\n" +
-        "float w=sin(uT*1.6+p.x*0.35+p.z*0.27)*0.05*tt*uWind; p.x+=lean.x+w; p.z+=lean.y+w*0.6; vW=p.xz; vT=t; vN=normal; vK=vec3(0.5+0.95*sn(p.xz*0.5), sn(p.xz*0.07+3.0), sn(p.xz*0.28+7.0)*6.283); gl_Position=projectionMatrix*viewMatrix*vec4(p,1.0); }",
-      fragmentShader: "uniform vec3 uSun, uPl; uniform float uR, uD; varying vec2 vW; varying float vT; varying vec3 vN; varying vec3 vK;\n" +
-        "float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }\n" +
-        "float bl(vec2 p, float a1, float a2, float tr, float fl, float wmax){ vec2 f=fract(p)-vec2(0.5)-(vec2(a1,a2)-0.5)*0.22;\n" +
-        "float ang=fl+(a1-0.5)*1.1; f-=vec2(cos(ang),sin(ang))*0.34*tr*tr; float g=a2*6.283; float cg=cos(g), sg=sin(g); f=vec2(cg*f.x+sg*f.y,-sg*f.x+cg*f.y);\n" +
-        "float w=mix(wmax,0.025,pow(tr,0.8)); float th=0.115; return (f.x*f.x/(w*w)+f.y*f.y/(th*th))<1.0?1.0:0.0; }\n" +
-        "void main(){ vec3 n=normalize(vN); if(n.y<0.84) discard;\n" +
-        "float d=length(vW-uPl.xz); float fade=1.0-smoothstep(uR*0.5,uR,d);\n" +
-        "float clump=vK.x*mix(0.3,1.0,smoothstep(0.35,1.05,d)); float hue=vK.y; float fl=vK.z;\n" +
-        "bool hit=false; float r1=0.0; float hf=0.0;\n" +
-        "vec2 pc=(mat2(0.82,-0.57,0.57,0.82)*vW)*(uD*0.30); vec2 cc=floor(pc); float a1=h21(cc), a2=h21(cc+17.3), a3=h21(cc+5.1);\n" +
-        "float wC=1.0-smoothstep(uR*0.3,uR*0.85,d);\n" +
-        "if(a3<wC){ float hc=(0.6+0.4*a1)*clump*fade; if(vT<=hc && bl(pc,a1,a2,vT/max(hc,0.02),fl,0.42)>0.5){ hit=true; r1=a2; hf=hc; } }\n" +
-        "if(!hit){ vec2 p=(mat2(0.94,0.34,-0.34,0.94)*vW)*uD; vec2 c=floor(p); float b1=h21(c), b2=h21(c+17.3), b3=h21(c+5.1);\n" +
-        "float hg=(0.32+0.45*b3)*clump*fade; if(vT>hg) discard; if(bl(p,b1,b2,vT/max(hg,0.02),fl,0.36)<0.5) discard; r1=b1; hf=hg; }\n" +
+      vertexShader: "attribute vec4 aP; attribute vec4 aS; attribute vec4 aC; uniform vec3 uPl; uniform float uR, uT, uWind; varying vec3 vCol;\n" +
+        "void main(){ float t=position.y; float d=length(aP.xz-uPl.xz); float fade=1.0-smoothstep(uR*0.62,uR,d); float clr=mix(0.3,1.0,smoothstep(0.35,1.05,d));\n" +
+        "float h=aS.y*fade*clr; vec2 dir=vec2(cos(aS.x),sin(aS.x)); float wnd=sin(uT*1.6+aP.x*0.35+aP.z*0.27)*0.07*uWind; float bend=(aS.w+wnd)*h*t*t;\n" +
+        "vec3 wp=aP.xyz+vec3(0.0,t*h,0.0)+vec3(dir.x,0.0,dir.y)*bend+vec3(-dir.y,0.0,dir.x)*position.x*aS.z*fade;\n" +
         "vec3 base=vec3(0.11,0.33,0.09), mid=vec3(0.44,0.76,0.20), tip=vec3(0.90,0.97,0.44);\n" +
-        "float tr=clamp(vT/max(hf,0.05),0.0,1.0);\n" +
-        "vec3 col=mix(base,mid,smoothstep(0.0,0.55,tr)); col=mix(col,tip,smoothstep(0.55,1.0,tr)*0.85);\n" +
-        "col*=mix(vec3(0.84,1.0,1.04),vec3(1.2,1.06,0.62),hue)*mix(0.88,1.12,r1);\n" +
-        "float sunf=max(dot(n,uSun),0.0); float lit=0.55+0.45*sunf; col*=mix(0.62,1.0,pow(tr,0.55)); col+=vec3(0.30,0.24,0.04)*pow(tr,3.0)*sunf;\n" +
-        "float sh=smoothstep(1.0,0.15,length(vW-(uPl.xz+vec2(0.5,-0.4)))); col*=1.0-0.42*sh*(1.0-vT*0.4);\n" +
-        "col=mix(vec3(0.33,0.62,0.18),col*lit,fade); gl_FragColor=vec4(col,1.0); }" });
-    var mesh = new THREE.Mesh(geo, mat); mesh.frustumCulled = false; mesh.renderOrder = 1; scene.add(mesh);
-    var cx = 1e9, cz = 1e9, N1 = SEG + 1;
-    function rebuild(x0, z0) {
-      cx = x0; cz = z0;
-      var pa = posA.array, na = norA.array, k = 0;
-      for (var iz = 0; iz < N1; iz++) for (var ix = 0; ix < N1; ix++, k++) {
-        var x = x0 - S / 2 + ix * (S / SEG), z = z0 - S / 2 + iz * (S / SEG), y = ground(x, z);
-        pa[k * 3] = x; pa[k * 3 + 1] = y + 0.03; pa[k * 3 + 2] = z;
-        var dx = ground(x + 0.5, z) - ground(x - 0.5, z), dz = ground(x, z + 0.5) - ground(x, z - 0.5), il = 1 / Math.sqrt(dx * dx + 1 + dz * dz);
-        na[k * 3] = -dx * il; na[k * 3 + 1] = il; na[k * 3 + 2] = -dz * il;
-      }
-      posA.needsUpdate = true; norA.needsUpdate = true;
+        "vec3 g=mix(base,mid,smoothstep(0.0,0.55,t)); g=mix(g,tip,smoothstep(0.55,1.0,t)*0.85); g*=mix(0.62,1.0,pow(t,0.55)); g+=vec3(0.30,0.24,0.04)*pow(t,3.0)*aC.w;\n" +
+        "vCol=g*aC.rgb; gl_Position=projectionMatrix*viewMatrix*vec4(wp,1.0); }",
+      fragmentShader: "varying vec3 vCol; void main(){ gl_FragColor=vec4(vCol,1.0); }" });
+    var mesh = new THREE.Mesh(geo, mat); mesh.frustumCulled = false; scene.add(mesh);
+    var sP = new Float32Array(MAXN * 4), sS = new Float32Array(MAXN * 4), sC = new Float32Array(MAXN * 4);
+    var cnt = 0, q = 1, curN = 0, job = null, cx = 1e9, cz = 1e9, sig = -1, gOff = false, gLog = [];
+    function hs(i, j, s) { var h = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(s, 1274126177); h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
+    function sn(x, z) { return 0.5 + 0.5 * Math.sin(x * 1.7 + Math.sin(z * 1.3) * 2.0) * Math.cos(z * 1.5 + Math.sin(x * 1.1) * 2.0); }
+    var SX = 0.55, SZ = -0.45;
+    function startJob(x0, z0) {
+      var cs = [], hw = W + 6;
+      treeList.forEach(function (tr) { var h = 3.5 * tr.s, c = { t: 0, x: tr.g.position.x + SX * h, z: tr.g.position.z + SZ * h, r: 2.1 * tr.s }; if (Math.abs(c.x - x0) < hw + c.r && Math.abs(c.z - z0) < hw + c.r) cs.push(c); });
+      boxes.forEach(function (b) { var h = b.top - ground((b.minx + b.maxx) / 2, (b.minz + b.maxz) / 2); if (h < 0.3) return; var ox = SX * h, oz = SZ * h, c = { t: 1, a: b.minx + ox, b: b.maxx + ox, c: b.minz + oz, d: b.maxz + oz }; if (c.b > x0 - hw && c.a < x0 + hw && c.d > z0 - hw && c.c < z0 + hw) cs.push(c); });
+      job = { x0: x0, z0: z0, cs: cs, n: 0, zi: 0, zones: [{ d: FD, near: false }, { d: ND, near: true }], init: false };
     }
-    /* governador de qualidade: se o aparelho não aguenta, tira camadas, depois encolhe o raio, por fim desliga (só desce; ignora a carga inicial) */
-    var Lc = L, Rc = R, gLast = 0, gEma = 16, gNext = 3.5, gOff = false, gLog = [], PR0 = renderer.getPixelRatio(), PRc = PR0, PRmin = 1.0, gGood = 0;
-    function setLayers(n) { Lc = Math.max(0, n | 0); geo.instanceCount = Lc; U.uL.value = Math.max(1, Lc); mesh.visible = Lc > 0 && !gOff; }
-    function setPR(v) { PRc = v; renderer.setPixelRatio(v); renderer.setSize(window.innerWidth, window.innerHeight, false); }
+    function stepJob(budget) {
+      var t0 = performance.now(), J = job, Z = J.zones[J.zi], cell = 1 / Math.sqrt(Z.d);
+      if (!J.init) { J.i0 = Math.floor((J.x0 - W) / cell); J.i1 = Math.ceil((J.x0 + W) / cell); J.j = Math.floor((J.z0 - W) / cell); J.j1 = Math.ceil((J.z0 + W) / cell); J.init = true; }
+      while (performance.now() - t0 < budget) {
+        if (J.j > J.j1) { J.zi++; J.init = false; if (J.zi >= J.zones.length) finish(); return; }
+        var j = J.j++;
+        for (var i = J.i0; i <= J.i1; i++) {
+          var x = (i + hs(i, j, 1)) * cell, z = (j + hs(i, j, 2)) * cell, dc = Math.hypot(x - J.x0, z - J.z0);
+          if (Z.near ? dc >= NRc : (dc < NRc || dc >= W)) continue;
+          var y = ground(x, z), gx = (ground(x + 0.5, z) - y) * 2, gz = (ground(x, z + 0.5) - y) * 2, il = 1 / Math.sqrt(gx * gx + 1 + gz * gz);
+          if (il < 0.84 || J.n >= MAXN) continue;
+          var r3 = hs(i, j, 3), r4 = hs(i, j, 4), r5 = hs(i, j, 5);
+          var clump = 0.5 + 0.95 * sn(x * 0.5, z * 0.5), hue = sn(x * 0.07 + 3, z * 0.07 + 3), fl = sn(x * 0.28 + 7, z * 0.28 + 7) * 6.283, patch = 0.76 + 0.4 * sn(x * 0.045 + 11, z * 0.045 + 11);
+          var sh = 0;
+          for (var ci = 0; ci < J.cs.length; ci++) {
+            var c = J.cs[ci], v;
+            if (c.t === 0) { var dd = Math.hypot(x - c.x, z - c.z); v = 1 - Math.min(1, Math.max(0, (dd - c.r * 0.55) / (c.r * 0.7))); }
+            else { var ddx = Math.max(c.a - x, 0, x - c.b), ddz = Math.max(c.c - z, 0, z - c.d); v = 1 - Math.min(1, Math.hypot(ddx, ddz) / 0.9); }
+            if (v > sh) sh = v;
+          }
+          sh = sh * sh * (3 - 2 * sh);
+          var h = Z.near ? (0.26 + 0.36 * r3) * clump : (0.36 + 0.4 * r3) * clump, w = Z.near ? 0.1 + 0.05 * r4 : 0.19 + 0.08 * r4;
+          var nx = -gx * il, ny = il, nz = -gz * il, sf = Math.max(nx * -0.4 + ny * 0.8 + nz * 0.33, 0), lit = 0.62 + 0.38 * sf;
+          var m = (0.88 + 0.24 * r4) * patch * lit * (1 - 0.5 * sh);
+          var slot = J.n; if (J.n > 0) { var rj = (Math.random() * (J.n + 1)) | 0; if (rj < J.n) { var a4 = rj * 4, b4 = J.n * 4; sP[b4] = sP[a4]; sP[b4 + 1] = sP[a4 + 1]; sP[b4 + 2] = sP[a4 + 2]; sP[b4 + 3] = sP[a4 + 3]; sS[b4] = sS[a4]; sS[b4 + 1] = sS[a4 + 1]; sS[b4 + 2] = sS[a4 + 2]; sS[b4 + 3] = sS[a4 + 3]; sC[b4] = sC[a4]; sC[b4 + 1] = sC[a4 + 1]; sC[b4 + 2] = sC[a4 + 2]; sC[b4 + 3] = sC[a4 + 3]; slot = rj; } }
+          var o = slot * 4;
+          sP[o] = x; sP[o + 1] = y + 0.01; sP[o + 2] = z; sP[o + 3] = sh;
+          sS[o] = fl + (r5 - 0.5) * 1.1; sS[o + 1] = h; sS[o + 2] = w; sS[o + 3] = 0.3 + 0.2 * r5;
+          sC[o] = m * (0.84 + 0.36 * hue); sC[o + 1] = m; sC[o + 2] = m * (1.04 - 0.42 * hue); sC[o + 3] = sf * (1 - 0.5 * sh);
+          J.n++;
+        }
+      }
+    }
+    function finish() {
+      var J = job; job = null; cnt = J.n; cx = J.x0; cz = J.z0;
+      aP.array.set(sP.subarray(0, cnt * 4)); aS.array.set(sS.subarray(0, cnt * 4)); aC.array.set(sC.subarray(0, cnt * 4));
+      aP.needsUpdate = aS.needsUpdate = aC.needsUpdate = true; apply();
+    }
+    function apply() { curN = gOff ? 0 : Math.floor(cnt * q); geo.instanceCount = curN; mesh.visible = curN > 0; }
+    /* governador: se passar do limite de tempo por quadro, afina a densidade (só desce, sem subir de novo, para não oscilar) */
+    var gLast = 0, gEma = 16, gNext = 4, QS = [1, 0.75, 0.55, 0.4, 0.25];
     function govern(tt) {
       var dt = gLast ? (tt - gLast) * 1000 : 0; gLast = tt;
       if (dt <= 0 || dt > 120) return;
       gEma += (dt - gEma) * 0.05;
-      if (tt < gNext || window.__noGov) return;
-      var lim = isTouch ? 20 : 18; /* ms (~50 / 55 fps) */
-      if (gEma > lim && !gOff) {
-        gGood = 0;
-        if (PRc > PRmin + 0.01) { setPR(Math.max(PRmin, PRc * 0.82)); gLog.push('res' + PRc.toFixed(2)); }
-        else if (Lc > 5) { gLog.push('L' + Lc); setLayers(Lc - 2); }
-        else if (Rc > 9) { Rc = Math.max(9, Rc * 0.75); U.uR.value = Rc; gLog.push('R' + Rc.toFixed(0)); }
-        else { gOff = true; mesh.visible = false; gLog.push('off'); }
-        gNext = tt + 2.5; gEma = lim * 0.8;
-      } else {
-        gNext = tt + 1;
-        if (gEma < lim * 0.6 && PRc < PR0 - 0.01) { if (++gGood > 10) { gGood = 0; setPR(Math.min(PR0, PRc + 0.15)); gLog.push('res' + PRc.toFixed(2)); gNext = tt + 4; } } else gGood = 0;
-      }
+      if (tt < gNext || gOff || window.__noGov) return;
+      if (gEma > (isTouch ? 21 : 19)) {
+        var ix = 0; while (ix < QS.length - 1 && QS[ix] > q + 0.001) ix++;
+        if (ix < QS.length - 1) { q = QS[ix + 1]; gLog.push('d' + Math.round(q * 100)); } else { gOff = true; gLog.push('off'); }
+        apply(); gNext = tt + 3; gEma = 16;
+      } else gNext = tt + 1;
     }
     window.__grassUpd = function (px, pz, tt) {
-      if (Math.abs(px - cx) > 4 || Math.abs(pz - cz) > 4) rebuild(Math.round(px / 2) * 2, Math.round(pz / 2) * 2);
-      U.uPl.value.set(px, 0, pz); U.uT.value = tt; govern(tt);
+      U.uPl.value.set(px, 0, pz); U.uT.value = tt;
+      if (!job && (Math.abs(px - cx) > 3 || Math.abs(pz - cz) > 3 || sig !== treeList.length + boxes.length)) { sig = treeList.length + boxes.length; startJob(Math.round(px / 2) * 2, Math.round(pz / 2) * 2); }
+      if (job) stepJob(cnt === 0 ? 40 : 1.6);
+      govern(tt);
     };
-    window.__grassUpd(START.x, START.z, 0);
-    /* testes por #hash: #g0 = sem grama, #g5 = 5 camadas, #nogov = sem governador */
     var hm = /g(\d+)/.exec(location.hash); if (/nogov/.test(location.hash)) window.__noGov = true;
-    window.__shell = { layers: L, patch: S, tris: SEG * SEG * 2 * L, setLayers: setLayers, log: gLog, get cur() { return Lc; }, setOff: function (v) { gOff = !!v; mesh.visible = !gOff && Lc > 0; } };
-    if (hm) setLayers(Math.min(L, +hm[1]));
+    if (hm) { var gv = +hm[1] / 10; if (gv <= 0) gOff = true; else q = Math.min(1, gv); }
+    window.__shell = { info: function () { return curN + ' laminas (' + Math.round(q * 100) + '%)' + (gOff ? ' DESLIGADA' : '') + (gLog.length ? ' cortou: ' + gLog.join(',') : ''); }, setQ: function (v) { q = v; apply(); }, setOff: function (v) { gOff = !!v; apply(); } };
+    window.__grassUpd(START.x, START.z, 0);
   })();
 
   /* nuvens */
@@ -1372,7 +1386,7 @@
     window.addEventListener('pointerdown', function (e) { if (e.clientY < 90 && Math.abs(e.clientX - innerWidth / 2) < 120) { var n = performance.now(); taps = taps.filter(function (x) { return n - x < 900; }); taps.push(n); if (taps.length >= 3) { taps = []; tog(); } } });
     window.__fpsTick = function (now) {
       if (lastT) { acc2 += now - lastT; n2++; } lastT = now;
-      if (on && acc2 > 500) { var g = window.__shell; el.textContent = (1000 / (acc2 / n2)).toFixed(0) + ' fps  ' + (acc2 / n2).toFixed(1) + ' ms  dpr ' + renderer.getPixelRatio() + '  ' + innerWidth + 'x' + innerHeight + (g ? '\ngrama: ' + g.cur + '/' + g.layers + ' camadas' + (g.log.length ? ' (cortou: ' + g.log.join(',') + ')' : '') : ''); acc2 = 0; n2 = 0; }
+      if (on && acc2 > 500) { var g = window.__shell; el.textContent = (1000 / (acc2 / n2)).toFixed(0) + ' fps  ' + (acc2 / n2).toFixed(1) + ' ms  dpr ' + renderer.getPixelRatio() + '  ' + innerWidth + 'x' + innerHeight + (g ? '\ngrama: ' + g.info() : ''); acc2 = 0; n2 = 0; }
     };
   })();
 
