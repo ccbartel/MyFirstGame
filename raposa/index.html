@@ -528,7 +528,10 @@
       U.uPl.value.set(px, 0, pz); U.uT.value = tt; govern(tt);
     };
     window.__grassUpd(START.x, START.z, 0);
+    /* testes por #hash: #g0 = sem grama, #g5 = 5 camadas, #nogov = sem governador */
+    var hm = /g(\d+)/.exec(location.hash); if (/nogov/.test(location.hash)) window.__noGov = true;
     window.__shell = { layers: L, patch: S, tris: SEG * SEG * 2 * L, setLayers: setLayers, log: gLog, get cur() { return Lc; }, setOff: function (v) { gOff = !!v; mesh.visible = !gOff && Lc > 0; } };
+    if (hm) setLayers(Math.min(L, +hm[1]));
   })();
 
   /* nuvens */
