@@ -468,19 +468,19 @@
     geo.instanceCount = L;
     var U = { uH: { value: HGT }, uL: { value: L }, uSun: { value: SUNDIR.clone() }, uPl: { value: new THREE.Vector3() }, uR: { value: R }, uD: { value: DENS }, uT: { value: 0 }, uWind: { value: (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : 1 } };
     var mat = new THREE.ShaderMaterial({ uniforms: U, side: THREE.DoubleSide,
-      vertexShader: "attribute float layer; uniform float uH, uL, uT, uWind; varying vec2 vW; varying float vT; varying vec3 vN;\n" +
+      vertexShader: "attribute float layer; uniform float uH, uL, uT, uWind; varying vec2 vW; varying float vT; varying vec3 vN; varying vec3 vK;\n" +
+        "float sn(vec2 p){ return 0.5+0.5*sin(p.x*1.7+sin(p.y*1.3)*2.0)*cos(p.y*1.5+sin(p.x*1.1)*2.0); }\n" +
         "void main(){ float t=(layer+1.0)/uL; vec3 p=position+normalize(normal)*uH*t; float tt=t*t;\n" +
         "vec2 lean=vec2(sin(p.x*0.21+p.z*0.13+1.3), cos(p.z*0.19-p.x*0.11))*0.18*tt;\n" +
-        "float w=sin(uT*1.6+p.x*0.35+p.z*0.27)*0.05*tt*uWind; p.x+=lean.x+w; p.z+=lean.y+w*0.6; vW=p.xz; vT=t; vN=normal; gl_Position=projectionMatrix*viewMatrix*vec4(p,1.0); }",
-      fragmentShader: "uniform vec3 uSun, uPl; uniform float uR, uD; varying vec2 vW; varying float vT; varying vec3 vN;\n" +
+        "float w=sin(uT*1.6+p.x*0.35+p.z*0.27)*0.05*tt*uWind; p.x+=lean.x+w; p.z+=lean.y+w*0.6; vW=p.xz; vT=t; vN=normal; vK=vec3(0.5+0.95*sn(p.xz*0.5), sn(p.xz*0.07+3.0), sn(p.xz*0.28+7.0)*6.283); gl_Position=projectionMatrix*viewMatrix*vec4(p,1.0); }",
+      fragmentShader: "uniform vec3 uSun, uPl; uniform float uR, uD; varying vec2 vW; varying float vT; varying vec3 vN; varying vec3 vK;\n" +
         "float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }\n" +
-        "float sn(vec2 p){ return 0.5+0.5*sin(p.x*1.7+sin(p.y*1.3)*2.0)*cos(p.y*1.5+sin(p.x*1.1)*2.0); }\n" +
         "float bl(vec2 p, float a1, float a2, float tr, float fl, float wmax){ vec2 f=fract(p)-vec2(0.5)-(vec2(a1,a2)-0.5)*0.22;\n" +
         "float ang=fl+(a1-0.5)*1.1; f-=vec2(cos(ang),sin(ang))*0.34*tr*tr; float g=a2*6.283; float cg=cos(g), sg=sin(g); f=vec2(cg*f.x+sg*f.y,-sg*f.x+cg*f.y);\n" +
         "float w=mix(wmax,0.025,pow(tr,0.8)); float th=0.115; return (f.x*f.x/(w*w)+f.y*f.y/(th*th))<1.0?1.0:0.0; }\n" +
         "void main(){ vec3 n=normalize(vN); if(n.y<0.84) discard;\n" +
         "float d=length(vW-uPl.xz); float fade=1.0-smoothstep(uR*0.5,uR,d);\n" +
-        "float clump=(0.5+0.95*sn(vW*0.5))*mix(0.3,1.0,smoothstep(0.35,1.05,d)); float hue=sn(vW*0.07+3.0); float fl=sn(vW*0.28+7.0)*6.283;\n" +
+        "float clump=vK.x*mix(0.3,1.0,smoothstep(0.35,1.05,d)); float hue=vK.y; float fl=vK.z;\n" +
         "bool hit=false; float r1=0.0; float hf=0.0;\n" +
         "vec2 pc=(mat2(0.82,-0.57,0.57,0.82)*vW)*(uD*0.30); vec2 cc=floor(pc); float a1=h21(cc), a2=h21(cc+17.3), a3=h21(cc+5.1);\n" +
         "float wC=1.0-smoothstep(uR*0.3,uR*0.85,d);\n" +
@@ -508,20 +508,26 @@
       posA.needsUpdate = true; norA.needsUpdate = true;
     }
     /* governador de qualidade: se o aparelho não aguenta, tira camadas, depois encolhe o raio, por fim desliga (só desce; ignora a carga inicial) */
-    var Lc = L, Rc = R, gLast = 0, gEma = 16, gNext = 3.5, gOff = false, gLog = [];
+    var Lc = L, Rc = R, gLast = 0, gEma = 16, gNext = 3.5, gOff = false, gLog = [], PR0 = renderer.getPixelRatio(), PRc = PR0, PRmin = 1.0, gGood = 0;
     function setLayers(n) { Lc = Math.max(0, n | 0); geo.instanceCount = Lc; U.uL.value = Math.max(1, Lc); mesh.visible = Lc > 0 && !gOff; }
+    function setPR(v) { PRc = v; renderer.setPixelRatio(v); renderer.setSize(window.innerWidth, window.innerHeight, false); }
     function govern(tt) {
       var dt = gLast ? (tt - gLast) * 1000 : 0; gLast = tt;
       if (dt <= 0 || dt > 120) return;
       gEma += (dt - gEma) * 0.05;
-      if (tt < gNext || gOff || window.__noGov) return;
-      var lim = isTouch ? 24 : 20; /* ms (~42 / 50 fps) */
-      if (gEma > lim) {
-        if (Lc > 5) { gLog.push('L' + Lc); setLayers(Lc - 2); }
+      if (tt < gNext || window.__noGov) return;
+      var lim = isTouch ? 20 : 18; /* ms (~50 / 55 fps) */
+      if (gEma > lim && !gOff) {
+        gGood = 0;
+        if (PRc > PRmin + 0.01) { setPR(Math.max(PRmin, PRc * 0.82)); gLog.push('res' + PRc.toFixed(2)); }
+        else if (Lc > 5) { gLog.push('L' + Lc); setLayers(Lc - 2); }
         else if (Rc > 9) { Rc = Math.max(9, Rc * 0.75); U.uR.value = Rc; gLog.push('R' + Rc.toFixed(0)); }
         else { gOff = true; mesh.visible = false; gLog.push('off'); }
         gNext = tt + 2.5; gEma = lim * 0.8;
-      } else gNext = tt + 1;
+      } else {
+        gNext = tt + 1;
+        if (gEma < lim * 0.6 && PRc < PR0 - 0.01) { if (++gGood > 10) { gGood = 0; setPR(Math.min(PR0, PRc + 0.15)); gLog.push('res' + PRc.toFixed(2)); gNext = tt + 4; } } else gGood = 0;
+      }
     }
     window.__grassUpd = function (px, pz, tt) {
       if (Math.abs(px - cx) > 4 || Math.abs(pz - cz) > 4) rebuild(Math.round(px / 2) * 2, Math.round(pz / 2) * 2);
