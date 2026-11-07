@@ -1,0 +1,962 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head><body>
+<title>Laboratório de Juice</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+:root{--bg:#0f1424;--panel:#182038;--fg:#e9ecf6;--mut:#9aa3c0;--acc:#ffc93a;--on:#2f6b46;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);margin:0;font:14px system-ui,sans-serif}
+#app{display:flex;flex-direction:column;height:100dvh;padding-left:max(0px,env(safe-area-inset-left,0px));padding-right:max(0px,env(safe-area-inset-right,0px))}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px max(16px,env(safe-area-inset-left,0px))}
+header h1{font-size:16px;margin:0 8px 0 0}
+#tabs{display:flex;gap:6px;flex-wrap:wrap}
+button{background:var(--panel);color:var(--fg);border:1px solid #2c3658;border-radius:8px;padding:8px 12px;font:600 14px system-ui;cursor:pointer}
+button.on{background:var(--acc);color:#1b1404;border-color:var(--acc)}
+#go{background:#e8572c;border-color:#e8572c;color:#fff;font-size:16px;padding:10px 18px}
+main{flex:1;display:flex;min-height:0}
+#wrap{position:relative;flex:1;min-width:0}
+#c{width:100%;height:100%;display:block;touch-action:manipulation}
+#fl{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#fl div{font:900 34px system-ui!important;color:#ffd84a!important;-webkit-text-stroke:2px #2b1600}
+aside{width:290px;background:var(--panel);padding:12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.step{display:flex;gap:8px;align-items:center;padding:7px 8px;border-radius:8px;background:#11182c;cursor:pointer;user-select:none}
+.step.on{background:var(--on)}
+.step input{width:18px;height:18px}
+kbd{font:600 12px ui-monospace,monospace;background:#0008;border-radius:4px;padding:1px 5px;color:var(--mut)}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+#info{font:12px ui-monospace,monospace;color:var(--mut)}
+small{color:var(--mut);line-height:1.4}
+@media (max-width:760px){main{flex-direction:column}#wrap{flex:none;height:52dvh}aside{width:auto}}
+</style>
+<div id="app">
+<header><h1>Laboratório de Juice</h1><div id="tabs"></div><button id="go">Disparar (espaço)</button></header>
+<main><div id="wrap"><canvas id="c"></canvas><div id="fl"></div></div>
+<aside><div class="row"><button id="all">Tudo</button><button id="none">Nenhum</button><label class="step"><input id="rm" type="checkbox"><span>Reduzir movimento</span></label></div>
+<div id="steps"></div>
+<small>Liga e desliga cada passo (teclas 1-0) e dispara de novo para comparar. No feitiço, com "Crítico" ligado, cada 3º lançamento é crítico. Sons são provisórios. Referências: vasilev.yegor (baú), bannerfront (espada), theabilityforge (feitiço).</small>
+<div id="info">medindo...</div></aside></main></div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js"}}</script>
+<script>
+/* juice.js - modulo de "juice" sem dependencias, para colar num HTML unico (Three.js r128) ou usar via Node/<script>.
+ * Skill: game-juice. Funcoes PURAS primeiro (testaveis em Node); adaptadores que tocam DOM/three vem no fim e so
+ * recebem objetos "duck-typed" (camera.position.x, material.emissive...). Nada aqui importa THREE.
+ * Zero alocacao por quadro depois do aquecimento (pools, ring buffers, tween slots).
+ * Valores numericos dos TIERS e dos patterns de vibracao sao HIPOTESES INICIAIS: ajuste jogando.
+ * Easings: equacoes classicas de Robert Penner (c) 2001, BSD de 3 clausulas (mantenha este aviso se redistribuir
+ * o codigo-fonte; http://robertpenner.com/easing_terms_of_use.html). Formas fechadas conforme easings.net.
+ */
+(function (root) {
+  'use strict';
+
+  // ---------------------------------------------------------------- utilidades puras
+  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function clamp01(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  // suavizacao exponencial independente de FPS (camera lag, FOV kick): k ~ 1/tau
+  function damp(current, target, k, dt) { return current + (target - current) * (1 - Math.exp(-k * dt)); }
+
+  function createRng(seed) { // mulberry32: deterministico, rapido, sem alocar
+    var s = (seed >>> 0) || 1;
+    return function () {
+      s = (s + 0x6D2B79F5) >>> 0;
+      var t = s;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // ruido de valor 1D suave em [-1,1] (para shake sem tremor "serrilhado"); deterministico por seed
+  function hash01(i, seed) {
+    var h = Math.imul(i | 0, 0x27d4eb2d) ^ Math.imul((seed | 0) + 0x165667b1, 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+    h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+    h ^= h >>> 15;
+    return (h >>> 0) / 4294967296;
+  }
+  function noise1(x, seed) {
+    var i = Math.floor(x), f = x - i;
+    var u = f * f * (3 - 2 * f); // smoothstep
+    return (hash01(i, seed) * (1 - u) + hash01(i + 1, seed) * u) * 2 - 1;
+  }
+
+  // ---------------------------------------------------------------- easings (f(0)=0, f(1)=1 garantidos)
+  var C1 = 1.70158, C3 = C1 + 1, C4 = (2 * Math.PI) / 3;
+  var ease = {
+    linear: function (t) { return t; },
+    inQuad: function (t) { return t * t; },
+    outQuad: function (t) { return 1 - (1 - t) * (1 - t); },
+    inOutQuad: function (t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; },
+    inCubic: function (t) { return t * t * t; },
+    outCubic: function (t) { var u = 1 - t; return 1 - u * u * u; },
+    inOutCubic: function (t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; },
+    outQuint: function (t) { return 1 - Math.pow(1 - t, 5); },
+    inOutSine: function (t) { return -(Math.cos(Math.PI * t) - 1) / 2; },
+    outExpo: function (t) { return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t); },
+    inBack: function (t) { return C3 * t * t * t - C1 * t * t; },
+    outBack: function (t) { var u = t - 1; return 1 + C3 * u * u * u + C1 * u * u; },
+    outElastic: function (t) {
+      if (t <= 0) return 0; if (t >= 1) return 1;
+      return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * C4) + 1;
+    },
+    outBounce: function (t) {
+      var n1 = 7.5625, d1 = 2.75;
+      if (t < 1 / d1) return n1 * t * t;
+      if (t < 2 / d1) { t -= 1.5 / d1; return n1 * t * t + 0.75; }
+      if (t < 2.5 / d1) { t -= 2.25 / d1; return n1 * t * t + 0.9375; }
+      t -= 2.625 / d1; return n1 * t * t + 0.984375;
+    }
+  };
+
+  // ---------------------------------------------------------------- configuracoes e acessibilidade
+  // reduceMotion: true/false forca; null = segue o sistema (prefers-reduced-motion).
+  function detectReducedMotion(win) {
+    try {
+      if (win && win.matchMedia) return !!win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch (e) { /* ignora */ }
+    return false;
+  }
+  function createSettings(opts) {
+    opts = opts || {};
+    var s = {
+      reduceMotion: opts.reduceMotion === undefined ? null : opts.reduceMotion,
+      systemReduce: detectReducedMotion(opts.window),
+      shake: 1,       // 0..1 multiplicador do usuario
+      hitStop: 1,
+      flash: 1,
+      particles: 1,
+      haptics: true
+    };
+    s.reduced = function () { return s.reduceMotion === null ? s.systemReduce : !!s.reduceMotion; };
+    // multiplicadores efetivos. Reduzido: sem shake/zoom/slow-mo, menos particulas, squash fraco, flash fraco.
+    // (valores = HIPOTESE de design; o criterio WCAG 2.3.3 pede apenas poder desligar movimento nao essencial)
+    s.eff = function () {
+      var r = s.reduced();
+      return {
+        shake: r ? 0 : s.shake,
+        slowMo: r ? 0 : 1,
+        squash: r ? 0.3 : 1,
+        particles: r ? 0.4 * s.particles : s.particles,
+        hitStop: s.hitStop * (r ? 0.5 : 1),
+        flash: r ? 0 : s.flash,
+        haptics: s.haptics
+      };
+    };
+    if (opts.window && opts.window.matchMedia) {
+      try {
+        var mq = opts.window.matchMedia('(prefers-reduced-motion: reduce)');
+        var onc = function (e) { s.systemReduce = !!e.matches; };
+        if (mq.addEventListener) mq.addEventListener('change', onc); else if (mq.addListener) mq.addListener(onc);
+      } catch (e2) { /* ignora */ }
+    }
+    return s;
+  }
+
+  // limitador de flashes: nunca mais de `max` flashes em `windowSec` (WCAG 2.3.1: "mais de tres" reprova; default conservador 2)
+  function createFlashLimiter(max, windowSec) {
+    max = max || 2; windowSec = windowSec || 1;
+    var times = new Float64Array(max), n = 0, head = 0;
+    return {
+      allow: function (nowSec) { // retorna true e registra, ou false
+        if (n === max && nowSec - times[head] < windowSec) return false;
+        if (n < max) { times[(head + n) % max] = nowSec; n++; }
+        else { times[head] = nowSec; head = (head + 1) % max; }
+        return true;
+      },
+      reset: function () { n = 0; head = 0; }
+    };
+  }
+
+  // ---------------------------------------------------------------- molas e squash/stretch
+  // mola amortecida semi-implicita com subpassos (estavel com dt de ate ~1/30)
+  function createSpring(k, c) {
+    var sp = { x: 0, v: 0, target: 0, k: k || 180, c: c || 12 };
+    sp.kick = function (dv) { sp.v += dv; };
+    sp.update = function (dt) {
+      if (dt > 1 / 20) dt = 1 / 20;
+      var n = Math.ceil(dt / (1 / 120)), h = dt / n;
+      for (var i = 0; i < n; i++) {
+        sp.v += (-sp.k * (sp.x - sp.target) - sp.c * sp.v) * h;
+        sp.x += sp.v * h;
+      }
+      return sp.x;
+    };
+    sp.settled = function () { return Math.abs(sp.x - sp.target) < 1e-3 && Math.abs(sp.v) < 1e-2; };
+    return sp;
+  }
+  // squash/stretch: s>0 estica no eixo Y, s<0 achata; sx=sz=1/sqrt(sy) conserva volume (sx*sy*sz = 1)
+  function createSquash(k, c) {
+    var q = { spring: createSpring(k || 220, c || 11), sx: 1, sy: 1, sz: 1, amount: 1 };
+    q.kick = function (velocity) { q.spring.kick(velocity * q.amount); };      // ex.: -6 no pouso (achata), +5 no pulo
+    q.update = function (dt) {
+      var s = clamp(q.spring.update(dt), -0.6, 1.5);
+      q.sy = 1 + s; q.sx = q.sz = 1 / Math.sqrt(q.sy);
+      return q;
+    };
+    return q;
+  }
+
+  // ---------------------------------------------------------------- shake por trauma (Eiserloh; trauma^2 + ruido)
+  // sai em q.x, q.y, q.roll dentro de [-1,1]*intensidade; o chamador multiplica por maxOffset/maxRoll
+  function createShake(opts) {
+    opts = opts || {};
+    var q = {
+      trauma: 0, decay: opts.decay || 0.8, power: opts.power || 2, freq: opts.freq || 18,
+      seed: opts.seed || 1337, t: 0, x: 0, y: 0, roll: 0, intensity: 0, scale: 1
+    };
+    q.add = function (a) { q.trauma = clamp01(q.trauma + a * q.scale); };
+    q.reset = function () { q.trauma = 0; q.x = q.y = q.roll = q.intensity = 0; };
+    q.update = function (dt) {
+      q.trauma = Math.max(0, q.trauma - q.decay * dt);
+      q.t += dt * q.freq;
+      q.intensity = Math.pow(q.trauma, q.power);
+      if (q.intensity <= 0) { q.x = q.y = q.roll = 0; return q; }
+      q.x = noise1(q.t, q.seed) * q.intensity;
+      q.y = noise1(q.t, q.seed + 101) * q.intensity;
+      q.roll = noise1(q.t, q.seed + 202) * q.intensity;
+      return q;
+    };
+    return q;
+  }
+
+  // ---------------------------------------------------------------- relogio com hit-stop e slow-mo (acumulador de passo fixo)
+  // hit-stop NAO e dt=0 na fisica "solta": e congelar a entrada do acumulador, preservando o resto acumulado.
+  function createClock(opts) {
+    opts = opts || {};
+    var fixedDt = opts.fixedDt || 1 / 60, maxFrame = opts.maxFrame || 0.25, maxSteps = opts.maxSteps || 8;
+    var maxFreeze = opts.maxFreeze || 0.25;
+    var c = {
+      fixedDt: fixedDt, acc: 0, alpha: 0, freeze: 0, simTime: 0, realTime: 0,
+      frameDt: 0, realDt: 0, steps: 0, droppedTime: 0, scale: 1,
+      slowScale: 1, slowDur: 0, slowT: 0
+    };
+    c.hitStop = function (sec) { c.freeze = Math.min(maxFreeze, Math.max(c.freeze, sec)); }; // nao empilha: pega o maior
+    c.slowMo = function (scale, dur) { c.slowScale = scale; c.slowDur = dur; c.slowT = 0; };
+    c.isFrozen = function () { return c.freeze > 0; };
+    c.step = function (realDt, simFn, ctx) {
+      if (!(realDt > 0)) realDt = 0;
+      if (realDt > maxFrame) realDt = maxFrame;           // aba em segundo plano / pausa do debugger
+      var frozen = Math.min(realDt, c.freeze);
+      c.freeze -= frozen;
+      var free = realDt - frozen;                          // parte do quadro que realmente avanca o mundo
+      var scale = 1;
+      if (c.slowDur > 0 && c.slowT < c.slowDur) {
+        c.slowT = Math.min(c.slowDur, c.slowT + free);     // slow-mo conta em tempo real, sem consumir no freeze
+        scale = lerp(c.slowScale, 1, ease.inCubic(c.slowT / c.slowDur));
+      }
+      c.scale = scale;
+      var simDt = free * scale;
+      c.realDt = realDt; c.frameDt = simDt; c.realTime += realDt;
+      c.acc += simDt;
+      var steps = 0;
+      while (c.acc >= fixedDt - 1e-9 && steps < maxSteps) {
+        simFn(fixedDt, ctx);
+        c.acc -= fixedDt; c.simTime += fixedDt; steps++;
+      }
+      if (steps === maxSteps && c.acc >= fixedDt) { // protecao contra espiral da morte: descarta o excesso e registra
+        var keep = c.acc % fixedDt; c.droppedTime += c.acc - keep; c.acc = keep;
+      }
+      if (c.acc < 0) c.acc = 0;
+      c.steps = steps;
+      c.alpha = c.acc / fixedDt;                           // para interpolar a renderizacao
+      return steps;
+    };
+    return c;
+  }
+
+  // ---------------------------------------------------------------- pool de particulas (arrays tipados, compactacao por troca)
+  // vivas ocupam os indices 0..count-1 => InstancedMesh.count = pool.count. Cheio: descarta e conta em `dropped` (orcamento).
+  function createParticlePool(max, seed) {
+    var rng = createRng(seed || 7);
+    var p = {
+      max: max, count: 0, dropped: 0, gravity: 9.8, drag: 0.0,
+      px: new Float32Array(max), py: new Float32Array(max), pz: new Float32Array(max),
+      vx: new Float32Array(max), vy: new Float32Array(max), vz: new Float32Array(max),
+      life: new Float32Array(max), maxLife: new Float32Array(max), size: new Float32Array(max), rnd: new Float32Array(max)
+    };
+    p.emitBurst = function (x, y, z, n, speed, life, up, sizeBase) { // esfera + vies para cima; sem objetos temporarios
+      for (var k = 0; k < n; k++) {
+        if (p.count >= p.max) { p.dropped += n - k; return; }
+        var i = p.count++;
+        var a = rng() * 6.283185307, cz = rng() * 2 - 1, sr = Math.sqrt(1 - cz * cz), sp = speed * (0.4 + 0.6 * rng());
+        p.px[i] = x; p.py[i] = y; p.pz[i] = z;
+        p.vx[i] = Math.cos(a) * sr * sp; p.vy[i] = cz * sp + (up || 0); p.vz[i] = Math.sin(a) * sr * sp;
+        p.maxLife[i] = p.life[i] = life * (0.7 + 0.3 * rng());
+        p.size[i] = (sizeBase || 1) * (0.6 + 0.8 * rng()); p.rnd[i] = rng();
+      }
+    };
+    p.update = function (dt) {
+      var drag = Math.max(0, 1 - p.drag * dt);
+      for (var i = p.count - 1; i >= 0; i--) {
+        p.life[i] -= dt;
+        if (p.life[i] <= 0) { // remove trocando com a ultima viva
+          var l = --p.count;
+          if (i !== l) {
+            p.px[i] = p.px[l]; p.py[i] = p.py[l]; p.pz[i] = p.pz[l];
+            p.vx[i] = p.vx[l]; p.vy[i] = p.vy[l]; p.vz[i] = p.vz[l];
+            p.life[i] = p.life[l]; p.maxLife[i] = p.maxLife[l]; p.size[i] = p.size[l]; p.rnd[i] = p.rnd[l];
+          }
+          continue;
+        }
+        p.vy[i] -= p.gravity * dt;
+        p.vx[i] *= drag; p.vy[i] *= drag; p.vz[i] *= drag;
+        p.px[i] += p.vx[i] * dt; p.py[i] += p.vy[i] * dt; p.pz[i] += p.vz[i] * dt;
+      }
+    };
+    p.t01 = function (i) { return 1 - p.life[i] / p.maxLife[i]; }; // 0 nasce -> 1 morre (para alpha/tamanho)
+    p.clear = function () { p.count = 0; };
+    return p;
+  }
+
+  // ---------------------------------------------------------------- numeros flutuantes (slots fixos; 'pop' com outBack)
+  function createFloaters(max) {
+    var f = {
+      max: max, active: new Uint8Array(max), x: new Float32Array(max), y: new Float32Array(max),
+      vy: new Float32Array(max), life: new Float32Array(max), maxLife: new Float32Array(max),
+      scale: new Float32Array(max), alpha: new Float32Array(max), value: new Float32Array(max), kind: new Uint8Array(max),
+      alive: 0, dropped: 0, onSpawn: null
+    };
+    f.spawn = function (x, y, value, kind, life) {
+      for (var i = 0; i < max; i++) {
+        if (!f.active[i]) {
+          f.active[i] = 1; f.x[i] = x; f.y[i] = y; f.vy[i] = -60; // sobe (unidades/s; eixo Y de tela cresce p/ baixo)
+          f.life[i] = f.maxLife[i] = life || 0.9; f.value[i] = value; f.kind[i] = kind || 0;
+          f.scale[i] = 0; f.alpha[i] = 1; f.alive++;
+          if (f.onSpawn) f.onSpawn(i, value, kind || 0);
+          return i;
+        }
+      }
+      f.dropped++; return -1;
+    };
+    f.update = function (dt) {
+      for (var i = 0; i < max; i++) {
+        if (!f.active[i]) continue;
+        f.life[i] -= dt;
+        if (f.life[i] <= 0) { f.active[i] = 0; f.alive--; f.alpha[i] = 0; continue; }
+        var t = 1 - f.life[i] / f.maxLife[i];
+        f.y[i] += f.vy[i] * dt; f.vy[i] *= Math.max(0, 1 - 2.5 * dt);
+        f.scale[i] = ease.outBack(clamp01(t / 0.18));            // pop nos primeiros ~18% da vida
+        f.alpha[i] = t < 0.6 ? 1 : 1 - (t - 0.6) / 0.4;          // some no final
+      }
+    };
+    return f;
+  }
+
+  // ---------------------------------------------------------------- tweens em slots (sem alocar apos criar)
+  function createTweens(max) {
+    var tw = { max: max, active: 0, dropped: 0 };
+    var obj = new Array(max), key = new Array(max), from = new Float64Array(max), to = new Float64Array(max),
+      dur = new Float64Array(max), t = new Float64Array(max), delay = new Float64Array(max), fn = new Array(max),
+      on = new Uint8Array(max), done = new Array(max);
+    for (var i = 0; i < max; i++) { obj[i] = null; key[i] = null; fn[i] = null; done[i] = null; }
+    tw.start = function (o, k, target, seconds, easeFn, delaySec, onDone) {
+      for (var i = 0; i < max; i++) {
+        if (!on[i]) {
+          on[i] = 1; obj[i] = o; key[i] = k; from[i] = o[k]; to[i] = target; dur[i] = Math.max(1e-6, seconds);
+          t[i] = 0; delay[i] = delaySec || 0; fn[i] = easeFn || ease.outCubic; done[i] = onDone || null; tw.active++;
+          return i;
+        }
+      }
+      tw.dropped++; return -1;
+    };
+    tw.update = function (dt) {
+      for (var i = 0; i < max; i++) {
+        if (!on[i]) continue;
+        if (delay[i] > 0) { delay[i] -= dt; continue; }
+        t[i] += dt;
+        var u = clamp01(t[i] / dur[i]);
+        obj[i][key[i]] = u >= 1 ? to[i] : from[i] + (to[i] - from[i]) * fn[i](u); // fim EXATO em `to`
+        if (u >= 1) { on[i] = 0; tw.active--; var d = done[i]; obj[i] = null; done[i] = null; if (d) d(); }
+      }
+    };
+    return tw;
+  }
+
+  // rolagem de contador: mostra valor inteiro que persegue o alvo (so muda texto quando o inteiro muda)
+  function createRoller(rate) {
+    var r = { shown: 0, target: 0, rate: rate || 6, lastInt: 0, changed: false };
+    r.set = function (v) { r.target = v; };
+    r.update = function (dt) {
+      r.shown += (r.target - r.shown) * (1 - Math.exp(-r.rate * dt));
+      if (Math.abs(r.target - r.shown) < 0.5) r.shown = r.target;
+      var n = Math.round(r.shown); r.changed = n !== r.lastInt; r.lastInt = n; return n;
+    };
+    return r;
+  }
+
+  // medidor de tempo de quadro (ring buffer). summary() ordena uma copia: chame 1x/s, nao por quadro.
+  function createFrameStats(n) {
+    n = n || 240;
+    var buf = new Float32Array(n), scratch = new Float32Array(n), st = { n: 0, i: 0 };
+    st.push = function (ms) { buf[st.i] = ms; st.i = (st.i + 1) % n; if (st.n < n) st.n++; };
+    st.summary = function () {
+      if (!st.n) return { n: 0, mean: 0, p95: 0, max: 0 };
+      var sum = 0, mx = 0;
+      for (var k = 0; k < st.n; k++) { scratch[k] = buf[k]; sum += buf[k]; if (buf[k] > mx) mx = buf[k]; }
+      var view = scratch.subarray(0, st.n); view.sort();
+      return { n: st.n, mean: sum / st.n, p95: view[Math.min(st.n - 1, Math.floor(st.n * 0.95))], max: mx };
+    };
+    return st;
+  }
+
+  // ---------------------------------------------------------------- haptico seguro (Android/Chrome; iOS Safari NAO tem navigator.vibrate)
+  var HAPTIC_PATTERNS = { tick: [8], light: [15], medium: [30], heavy: [55], success: [20, 40, 20], fail: [60, 40, 60] }; // HIPOTESE (ms)
+  // Chrome REGISTRA ERRO NO CONSOLE se vibrate() for chamado antes de o usuario interagir (medido nesta skill): so toca "armado".
+  function createHaptics(nav, settings) {
+    var last = -1e9, h = { minGapMs: 60, supported: !!(nav && typeof nav.vibrate === 'function'), sent: 0, armed: false };
+    h.arm = function () { h.armed = true; };   // chame no 1o pointerup/keydown (toque = pointerup/touchend ativam; pointerdown de toque nao)
+    h.play = function (name, nowMs) {
+      if (!h.supported) return false;
+      if (settings && !settings.haptics) return false;
+      if (!h.armed && !(nav.userActivation && nav.userActivation.hasBeenActive)) return false;
+      if (nowMs - last < h.minGapMs) return false;       // limite de taxa: evita "formigamento" e bateria
+      var pat = HAPTIC_PATTERNS[name]; if (!pat) return false;
+      try { var ok = nav.vibrate(pat); if (ok) { last = nowMs; h.sent++; } return !!ok; } catch (e) { return false; }
+    };
+    h.cancel = function () { try { if (h.supported) nav.vibrate(0); } catch (e) { /* ignora */ } };
+    return h;
+  }
+  function armHapticsOnFirstGesture(win, haptics) { // listeners {once}; sem custo por quadro
+    var f = function () { haptics.arm(); };
+    ['pointerup', 'keydown', 'touchend', 'mousedown'].forEach(function (ev) { win.addEventListener(ev, f, { once: true, passive: true }); });
+  }
+
+  // ---------------------------------------------------------------- hierarquia de eventos (pequeno/medio/grande) - HIPOTESES
+  var TIERS = {
+    small:  { trauma: 0.10, hitStop: 0.00, particles: 6,  speed: 3, life: 0.35, slowMo: 0,    slowDur: 0,   flash: 0, haptic: 'tick' },
+    medium: { trauma: 0.35, hitStop: 0.06, particles: 14, speed: 5, life: 0.50, slowMo: 0,    slowDur: 0,   flash: 1, haptic: 'light' },
+    big:    { trauma: 0.80, hitStop: 0.11, particles: 28, speed: 8, life: 0.70, slowMo: 0.35, slowDur: 0.5, flash: 1, haptic: 'heavy' }
+  };
+
+  // fachada: junta tudo, respeitando settings; fire() e o unico ponto de entrada por evento de jogo
+  function create(opts) {
+    opts = opts || {};
+    var settings = opts.settings || createSettings({ window: opts.window });
+    var j = {
+      settings: settings,
+      clock: createClock({ fixedDt: opts.fixedDt, maxFreeze: opts.maxFreeze }),
+      shake: createShake(opts.shake),
+      particles: createParticlePool(opts.maxParticles || 256, opts.seed),
+      floaters: createFloaters(opts.maxFloaters || 12),
+      tweens: createTweens(opts.maxTweens || 32),
+      flashLimiter: createFlashLimiter(opts.maxFlashesPerSec || 2, 1),
+      flash: 0, // 0..1, decai em tempo real; o jogo le e aplica (emissive/overlay)
+      haptics: createHaptics(opts.navigator, settings),
+      events: 0
+    };
+    j.fire = function (tierName, x, y, z, nowSec) {
+      var tr = TIERS[tierName]; if (!tr) return;
+      var e = settings.eff(); j.events++;
+      j.shake.add(tr.trauma * e.shake);
+      if (tr.hitStop > 0) j.clock.hitStop(tr.hitStop * e.hitStop);
+      if (tr.slowMo > 0 && e.slowMo > 0) j.clock.slowMo(tr.slowMo, tr.slowDur);
+      j.particles.emitBurst(x || 0, y || 0, z || 0, Math.round(tr.particles * e.particles), tr.speed, tr.life, tr.speed * 0.4, 1);
+      if (tr.flash && e.flash > 0 && j.flashLimiter.allow(nowSec || 0)) j.flash = Math.max(j.flash, e.flash);
+      if (e.haptics) j.haptics.play(tr.haptic, (nowSec || 0) * 1000);
+    };
+    // tempo real (shake, flash, tweens de UI, floaters) vs tempo de simulacao (particulas): chame 1x por quadro de render
+    j.update = function (realDt, simFn, ctx) {
+      var steps = j.clock.step(realDt, simFn, ctx);
+      j.shake.update(j.clock.realDt);
+      j.flash = Math.max(0, j.flash - j.clock.realDt / 0.12);   // 0.12 s: HIPOTESE; pulso unico, nao pisca em loop
+      j.tweens.update(j.clock.realDt);
+      j.floaters.update(j.clock.realDt);
+      j.particles.update(j.clock.frameDt);                       // congela junto com o mundo no hit-stop
+      return steps;
+    };
+    return j;
+  }
+
+  // ---------------------------------------------------------------- ADAPTADORES (tocam three/DOM; duck-typed, sem importar THREE)
+  // aplica o shake sobre uma base "limpa" (nao acumula). camera = THREE.Camera; base = {x,y,z,rz} guardados antes
+  function applyShakeToCamera(camera, base, shake, maxOffset, maxRoll) {
+    camera.position.x = base.x + shake.x * maxOffset;
+    camera.position.y = base.y + shake.y * maxOffset;
+    camera.position.z = base.z;
+    camera.rotation.z = base.rz + shake.roll * maxRoll;
+  }
+  // escreve particulas vivas num Float32Array de THREE.Points (mortas ficam longe); retorne e marque needsUpdate fora
+  function writePointsPositions(pool, positions) {
+    var i, n = pool.count;
+    for (i = 0; i < n; i++) { positions[i * 3] = pool.px[i]; positions[i * 3 + 1] = pool.py[i]; positions[i * 3 + 2] = pool.pz[i]; }
+    for (; i < pool.max; i++) positions[i * 3 + 1] = -9999;
+    return n;
+  }
+  // InstancedMesh: dummy = THREE.Object3D reutilizado; mesh.count = vivas; chame mesh.instanceMatrix.needsUpdate = true depois
+  function writeInstanced(pool, mesh, dummy, baseScale) {
+    for (var i = 0; i < pool.count; i++) {
+      var s = baseScale * pool.size[i] * (1 - pool.t01(i) * 0.8);
+      dummy.position.set(pool.px[i], pool.py[i], pool.pz[i]);
+      dummy.scale.set(s, s, s);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.count = pool.count;
+    return pool.count;
+  }
+  // squash em mesh: base = escala original {x,y,z}
+  function applySquashToObject(obj, q, base) { obj.scale.set(base.x * q.sx, base.y * q.sy, base.z * q.sz); }
+  // flash em material compartilhado: so use quando ha UMA instancia desse material (senao pisca todas)
+  function applyFlashEmissive(material, amount) { if (material && material.emissive) material.emissive.setScalar(amount); }
+  // DOM: elementos pre-criados; so transform/opacity por quadro. Texto so no spawn.
+  function createDomFloaters(container, floaters, doc, formatFn) {
+    var els = new Array(floaters.max), i;
+    for (i = 0; i < floaters.max; i++) {
+      var el = doc.createElement('div');
+      el.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;will-change:transform,opacity;opacity:0;font:700 22px system-ui,sans-serif;color:#ffd84a;text-shadow:0 2px 0 #0008';
+      container.appendChild(el); els[i] = el;
+    }
+    floaters.onSpawn = function (slot, value) { els[slot].textContent = formatFn ? formatFn(value) : ('+' + value); };
+    return {
+      els: els,
+      sync: function () {
+        for (var k = 0; k < floaters.max; k++) {
+          var e = els[k];
+          if (floaters.active[k]) {
+            e.style.opacity = floaters.alpha[k];
+            e.style.transform = 'translate3d(' + floaters.x[k].toFixed(1) + 'px,' + floaters.y[k].toFixed(1) + 'px,0) scale(' + floaters.scale[k].toFixed(3) + ')';
+          } else if (e.style.opacity !== '0') e.style.opacity = '0';
+        }
+      }
+    };
+  }
+
+  var api = {
+    version: '1.0.0',
+    clamp: clamp, clamp01: clamp01, lerp: lerp, damp: damp, ease: ease, noise1: noise1, createRng: createRng,
+    createSettings: createSettings, detectReducedMotion: detectReducedMotion, createFlashLimiter: createFlashLimiter,
+    createSpring: createSpring, createSquash: createSquash, createShake: createShake, createClock: createClock,
+    createParticlePool: createParticlePool, createFloaters: createFloaters, createTweens: createTweens,
+    createRoller: createRoller, createFrameStats: createFrameStats, createHaptics: createHaptics, armHapticsOnFirstGesture: armHapticsOnFirstGesture,
+    HAPTIC_PATTERNS: HAPTIC_PATTERNS, TIERS: TIERS, create: create,
+    applyShakeToCamera: applyShakeToCamera, writePointsPositions: writePointsPositions, writeInstanced: writeInstanced,
+    applySquashToObject: applySquashToObject, applyFlashEmissive: applyFlashEmissive, createDomFloaters: createDomFloaters
+  };
+  root.Juice = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
+</script>
+<script type="module">
+import * as THREE from 'three';
+// Laboratório de juice: baú (7 passos), golpe de espada (7 passos), feitiço de terra (10 níveis).
+// three r186 no modo "igual ao jogo" (ColorManagement desligado, saída Linear, luzes x PI).
+THREE.ColorManagement.enabled = false;
+const J = Juice;
+const PI = Math.PI;
+
+// ------------------------------------------------------------------ cena base
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x141a2b);
+scene.fog = new THREE.Fog(0x141a2b, 12, 26);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 60);
+const camBase = { x: 0, y: 4.2, z: 8.5, rz: 0 };
+camera.position.set(camBase.x, camBase.y, camBase.z);
+camera.lookAt(0, 0.6, 0);
+camBase.rz = camera.rotation.z;
+scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x2a2438, 0.75 * PI));
+const sun = new THREE.DirectionalLight(0xfff1dc, 0.85 * PI);
+sun.position.set(3, 7, 4); sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6 });
+scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshLambertMaterial({ color: 0x2b3350 }));
+ground.rotation.x = -PI / 2; ground.receiveShadow = true; scene.add(ground);
+const grid = new THREE.GridHelper(40, 40, 0x3c4770, 0x323b5e); grid.position.y = 0.002; scene.add(grid);
+
+const lam = (c, extra) => new THREE.MeshLambertMaterial(Object.assign({ color: c }, extra || {}));
+const add = (mat) => new THREE.MeshBasicMaterial({ color: mat, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+function box(w, h, d, mat, x, y, z, parent) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x || 0, y || 0, z || 0); m.castShadow = true; (parent || scene).add(m); return m;
+}
+
+// ------------------------------------------------------------------ juice (módulo da skill game-juice)
+const settings = J.createSettings({ window });
+const shake = J.createShake({ decay: 1.4 });
+const clock = J.createClock({ maxFreeze: 0.2 });
+const floaters = J.createFloaters(10);
+const domF = J.createDomFloaters(document.getElementById('fl'), floaters, document, (v) => (v >= 50 ? v + ' CRÍTICO!' : String(v)));
+const stats = J.createFrameStats(240);
+
+// pools de partículas -> InstancedMesh (zero alocação por quadro)
+const dummy = new THREE.Object3D();
+function makePool(max, geo, mat, gravity, drag, seed) {
+  const pool = J.createParticlePool(max, seed);
+  pool.gravity = gravity; pool.drag = drag;
+  const mesh = new THREE.InstancedMesh(geo, mat, max); mesh.count = 0; mesh.frustumCulled = false; scene.add(mesh);
+  return { pool, mesh };
+}
+const P = {
+  spark: makePool(160, new THREE.BoxGeometry(0.05, 0.05, 0.05), add(0xffd25a), 6, 1.5, 3),
+  dust: makePool(160, new THREE.IcosahedronGeometry(0.12, 0), lam(0x9a8f88, { transparent: true, opacity: 0.85 }), -0.4, 2.5, 5),
+  rock: makePool(120, new THREE.BoxGeometry(0.12, 0.1, 0.12), lam(0x6d5640), 14, 0.2, 7),
+  blood: makePool(80, new THREE.BoxGeometry(0.06, 0.06, 0.06), lam(0x9a1020), 12, 0.5, 9),
+  magic: makePool(140, new THREE.OctahedronGeometry(0.035, 0), add(0xfff1a0), -0.9, 0.6, 11),
+};
+function burst(k, x, y, z, n, speed, life, up, size) {
+  const e = settings.eff();
+  P[k].pool.emitBurst(x, y, z, Math.max(1, Math.round(n * e.particles)), speed, life, up, size);
+}
+function updatePools(dt) {
+  for (const k in P) {
+    const { pool, mesh } = P[k];
+    pool.update(dt);
+    J.writeInstanced(pool, mesh, dummy, 1);
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// estrelas que "estouram como bolha" e destroços que ficam: slots fixos
+const STAR_N = 10;
+const starGeo = (() => { // estrela de 5 pontas achatada
+  const s = new THREE.Shape();
+  for (let i = 0; i < 10; i++) { const r = i % 2 ? 0.45 : 1, a = i / 10 * PI * 2 + PI / 2; i ? s.lineTo(Math.cos(a) * r, Math.sin(a) * r) : s.moveTo(Math.cos(a) * r, Math.sin(a) * r); }
+  return new THREE.ShapeGeometry(s);
+})();
+const stars = [];
+for (let i = 0; i < STAR_N; i++) {
+  const m = new THREE.Mesh(starGeo, add(0xfff0a0)); m.visible = false; scene.add(m);
+  stars.push({ m, t: 0, life: 0, vx: 0, vy: 0, vz: 0 });
+}
+const RUBBLE_N = 60;
+const rubble = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.11, 0), lam(0x5b4836), RUBBLE_N);
+rubble.count = 0; rubble.castShadow = true; scene.add(rubble);
+function addRubble(x, z, n, spread) {
+  for (let i = 0; i < n && rubble.count < RUBBLE_N; i++) {
+    const s = 0.6 + Math.random() * 0.9;
+    dummy.position.set(x + (Math.random() - 0.5) * spread, 0.05 * s, z + (Math.random() - 0.5) * spread);
+    dummy.rotation.set(Math.random() * 3, Math.random() * 3, 0); dummy.scale.set(s, s * 0.7, s); dummy.updateMatrix();
+    rubble.setMatrixAt(rubble.count++, dummy.matrix);
+  }
+  rubble.instanceMatrix.needsUpdate = true;
+  dummy.rotation.set(0, 0, 0);
+}
+
+// ------------------------------------------------------------------ áudio (placeholders sintetizados; grave e curto)
+let AC = null;
+function ac() { if (!AC) { try { AC = new AudioContext(); } catch (e) { AC = null; } } if (AC && AC.state === 'suspended') AC.resume(); return AC; }
+let noiseBuf = null;
+function noise(ctx) {
+  if (!noiseBuf) { noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  return noiseBuf;
+}
+function env(ctx, g, t, a, peak, dec) { g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + a + dec); }
+const SFX = {
+  thump() { const c = ac(); if (!c) return; const t = c.currentTime, o = c.createOscillator(), g = c.createGain(); o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(55, t + 0.18); env(c, g, t, 0.005, 0.5, 0.22); o.connect(g).connect(c.destination); o.start(t); o.stop(t + 0.3); },
+  clang() {
+    const c = ac(); if (!c) return; const t = c.currentTime, out = c.createGain(); out.gain.value = 0.18; out.connect(c.destination);
+    for (const f of [520, 1310, 1975, 2780]) { const o = c.createOscillator(), g = c.createGain(); o.type = 'triangle'; o.frequency.value = f; env(c, g, t, 0.002, 0.6, 0.25 + 220 / f); o.connect(g).connect(out); o.start(t); o.stop(t + 0.6); }
+    const n = c.createBufferSource(), ng = c.createGain(), hp = c.createBiquadFilter(); n.buffer = noise(c); hp.type = 'highpass'; hp.frequency.value = 2500; env(c, ng, t, 0.001, 0.5, 0.05); n.connect(hp).connect(ng).connect(out); n.start(t); n.stop(t + 0.1);
+  },
+  rumble(dur) { const c = ac(); if (!c) return; const t = c.currentTime, n = c.createBufferSource(), lp = c.createBiquadFilter(), g = c.createGain(); n.buffer = noise(c); n.loop = true; lp.type = 'lowpass'; lp.frequency.value = 160; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 0.08); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); n.connect(lp).connect(g).connect(c.destination); n.start(t); n.stop(t + dur + 0.05); },
+  crunch(big) { const c = ac(); if (!c) return; const t = c.currentTime, n = c.createBufferSource(), bp = c.createBiquadFilter(), g = c.createGain(); n.buffer = noise(c); bp.type = 'bandpass'; bp.frequency.value = big ? 300 : 450; bp.Q.value = 0.8; env(c, g, t, 0.003, big ? 1 : 0.7, big ? 0.45 : 0.25); n.connect(bp).connect(g).connect(c.destination); n.start(t); n.stop(t + 0.6); SFX.thump(); },
+  chime() { const c = ac(); if (!c) return; const t = c.currentTime; [660, 830, 990].forEach((f, i) => { const o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = f; env(c, g, t + i * 0.06, 0.01, 0.12, 0.5); o.connect(g).connect(c.destination); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.7); }); },
+};
+
+// ------------------------------------------------------------------ agenda em tempo de SIMULAÇÃO (congela no hit-stop)
+const agenda = []; // {t, fn}
+let simNow = 0;
+function at(delay, fn) { agenda.push({ t: simNow + delay, fn }); }
+function runAgenda() { for (let i = agenda.length - 1; i >= 0; i--) if (agenda[i].t <= simNow) { const f = agenda[i].fn; agenda.splice(i, 1); f(); } }
+const anims = []; // {t0, dur, fn(u)} em tempo de simulação
+function anim(dur, fn, delay) { anims.push({ t0: simNow + (delay || 0), dur, fn }); }
+function runAnims() {
+  for (let i = anims.length - 1; i >= 0; i--) {
+    const a = anims[i]; if (simNow < a.t0) continue;
+    const u = Math.min(1, (simNow - a.t0) / a.dur); a.fn(u); if (u >= 1) anims.splice(i, 1);
+  }
+}
+const E = J.ease;
+function hitStop(s) { clock.hitStop(s * settings.eff().hitStop); }
+function addShake(a) { shake.add(a * settings.eff().shake); }
+function toScreen(v) { // posição 3D -> px no container
+  v.project(camera);
+  return { x: (v.x * 0.5 + 0.5) * W, y: (-v.y * 0.5 + 0.5) * H };
+}
+const tmpV = new THREE.Vector3();
+function floatNum(x, y, z, value, kind) { tmpV.set(x, y, z); const s = toScreen(tmpV); floaters.spawn(s.x - 14, s.y, value, kind, kind ? 1.3 : 0.9); }
+
+// barra de vida (planos, sem DOM)
+function makeBar(parent, y) {
+  const g = new THREE.Group(); scene.add(g); const off = y;
+  const bg = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.12), new THREE.MeshBasicMaterial({ color: 0x111111 })); g.add(bg);
+  const lag = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.1), new THREE.MeshBasicMaterial({ color: 0xffffff })); lag.position.z = 0.001; g.add(lag);
+  const fg = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.1), new THREE.MeshBasicMaterial({ color: 0x37d35a })); fg.position.z = 0.002; g.add(fg);
+  const bar = { g, fg, lag, v: 1, lagV: 1 };
+  bar.set = (v) => { bar.v = v; };
+  bar.update = (dt) => {
+    bar.lagV += (bar.v - bar.lagV) * (1 - Math.exp(-4 * dt));
+    for (const [m, val] of [[bar.fg, bar.v], [bar.lag, bar.lagV]]) { m.scale.x = Math.max(0.0001, val); m.position.x = -(1 - val) / 2; }
+    g.position.set(parent.position.x, parent.position.y + off, parent.position.z); g.quaternion.copy(camera.quaternion);
+  };
+  return bar;
+}
+
+// boneco simples (cápsula + cabeça) com material próprio (flash não pisca os outros)
+function dummyMan(color, x) {
+  const g = new THREE.Group(); g.position.x = x; scene.add(g);
+  const mat = lam(color);
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.7, 4, 10), mat); body.position.y = 0.67; body.castShadow = true; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 10), mat); head.position.y = 1.5; head.castShadow = true; g.add(head);
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.6, 0.14), mat); arm.position.set(0.38, 1.0, 0); arm.castShadow = true; g.add(arm);
+  return { g, mat, body, head, arm, base: new THREE.Color(color) };
+}
+
+// ------------------------------------------------------------------ CENA 1: BAÚ
+const chest = (() => {
+  const root = new THREE.Group(); scene.add(root);
+  const wood = lam(0xa8602c), iron = lam(0x7d8597), goldM = lam(0xffc93a, { emissive: 0x000000 });
+  const body = new THREE.Group(); root.add(body);
+  box(1.4, 0.75, 0.9, wood, 0, 0.375, 0, body);
+  box(1.44, 0.08, 0.94, iron, 0, 0.72, 0, body);
+  box(0.1, 0.78, 0.94, iron, -0.55, 0.39, 0, body); box(0.1, 0.78, 0.94, iron, 0.55, 0.39, 0, body);
+  const gold = box(1.2, 0.12, 0.7, goldM, 0, 0.66, 0, body); gold.castShadow = false;
+  const lidPivot = new THREE.Group(); lidPivot.position.set(0, 0.76, -0.45); body.add(lidPivot);
+  const lid = box(1.4, 0.32, 0.9, wood, 0, 0.16, 0.45, lidPivot);
+  box(1.44, 0.06, 0.94, iron, 0, 0.3, 0.45, lidPivot);
+  const lock = box(0.22, 0.26, 0.08, iron, 0, 0.62, 0.47, body);
+  const light = new THREE.PointLight(0xffc860, 0, 4, 2); light.position.set(0, 1.0, 0.1); body.add(light);
+  const rays = new THREE.Group(); rays.position.set(0, 0.75, 0); body.add(rays);
+  const rayMat = add(0xffd77a); rayMat.opacity = 0; rayMat.side = THREE.DoubleSide;
+  for (let i = 0; i < 7; i++) { const r = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 1.8), rayMat); r.position.y = 0.9; const p = new THREE.Group(); p.rotation.set(0.35 * Math.sin(i * 2.1), i / 7 * PI * 2, 0.4 * Math.cos(i * 1.7)); p.add(r); rays.add(p); }
+  const ringMat = add(0xffe6a0); ringMat.opacity = 0; ringMat.side = THREE.DoubleSide;
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48), ringMat); ring.rotation.x = -PI / 2; ring.position.y = 0.04; root.add(ring);
+  return { root, body, lidPivot, gold, goldM, lock, light, rays, rayMat, ring, ringMat, open: false, dustOn: false, wob: 0, sq: J.createSquash(260, 9) };
+})();
+const CHEST_STEPS = ['Tremer + achatar', 'Esticar (mola)', 'Batida (congela + câmera)', 'Luz de dentro + raios', 'Onda de choque', 'Estrelas que estouram', 'Poeira mágica subindo'];
+function chestReset() {
+  chest.lidPivot.rotation.x = 0; chest.open = false; chest.dustOn = false; chest.wob = 0;
+  chest.light.intensity = 0; chest.rayMat.opacity = 0; chest.ringMat.opacity = 0; chest.goldM.emissive.setScalar(0);
+  chest.body.rotation.set(0, 0, 0); chest.sq.spring.x = 0; chest.sq.spring.v = 0;
+}
+function chestPlay(on) {
+  chestReset();
+  let t = 0;
+  if (on[0]) { // tremer cada vez mais rápido e achatar
+    chest.wob = 1; at(0.7, () => { chest.wob = 0; chest.body.rotation.z = 0; chest.sq.kick(-4 * settings.eff().squash); });
+    t = 0.82;
+  }
+  at(t, () => {
+    if (on[1]) chest.sq.kick(7 * settings.eff().squash);
+    if (on[2]) { // batida: abre em 0,07 s, congela, treme a câmera
+      anim(0.07, (u) => { chest.lidPivot.rotation.x = -1.95 * E.outCubic(u); });
+      at(0.07, () => { hitStop(0.09); addShake(0.45); SFX.thump(); anim(0.25, (u) => { chest.lidPivot.rotation.x = -1.95 + 0.15 * Math.sin(u * PI) ; }); });
+    } else anim(0.6, (u) => { chest.lidPivot.rotation.x = -1.95 * E.inOutCubic(u); });
+    const tOpen = on[2] ? 0.07 : 0.6;
+    at(tOpen, () => {
+      chest.open = true;
+      if (on[3]) { anim(0.35, (u) => { chest.light.intensity = 1.2 * PI * u; chest.rayMat.opacity = 0.22 * u; chest.goldM.emissive.setRGB(0.22 * u, 0.15 * u, 0); }); SFX.chime(); }
+      if (on[4]) { chest.ringMat.opacity = 1; anim(0.45, (u) => { const s = 0.5 + 1.9 * E.outCubic(u); chest.ring.scale.set(s, s, s); chest.ringMat.opacity = 0.8 * (1 - u) * (1 - u); }); }
+      if (on[5]) launchStars(0, 1.0, 0);
+      if (on[6]) chest.dustOn = true;
+    });
+  });
+}
+function launchStars(x, y, z) {
+  const n = Math.max(3, Math.round(STAR_N * settings.eff().particles));
+  for (let i = 0; i < n; i++) {
+    const s = stars[i], a = (i / n) * PI * 2;
+    s.m.visible = true; s.m.position.set(x, y, z); s.t = 0; s.life = 0.7 + Math.random() * 0.35;
+    s.vx = Math.cos(a) * (1.2 + Math.random()); s.vz = Math.sin(a) * 0.5; s.vy = 2.5 + Math.random() * 1.5;
+  }
+}
+function updateStars(dt) {
+  for (const s of stars) {
+    if (!s.m.visible) continue;
+    s.t += dt; s.vy -= 3 * dt;
+    s.m.position.x += s.vx * dt; s.m.position.y += s.vy * dt; s.m.position.z += s.vz * dt;
+    const u = s.t / s.life;
+    // cresce, depois "pop": incha rápido e some
+    const sc = u < 0.8 ? 0.12 + 0.13 * E.outBack(Math.min(1, u / 0.3)) : 0.25 * (1 + (u - 0.8) * 4);
+    s.m.scale.setScalar(sc); s.m.material.opacity = u < 0.8 ? 1 : Math.max(0, 1 - (u - 0.8) * 5);
+    s.m.quaternion.copy(camera.quaternion);
+    if (u >= 1) s.m.visible = false;
+  }
+}
+let dustAcc = 0;
+function chestSim(dt) {
+  if (chest.wob) { chest.wob += dt; const w = chest.wob; chest.body.rotation.z = Math.sin(w * w * 60) * 0.07 * Math.min(1, w * 2) * settings.eff().squash; }
+  chest.sq.update(dt); chest.body.scale.set(chest.sq.sx, chest.sq.sy, chest.sq.sz);
+  if (chest.open && chest.rayMat.opacity > 0) chest.rays.rotation.y += dt * 0.5;
+  if (chest.dustOn) { dustAcc += dt * 24; while (dustAcc >= 1) { dustAcc--; burst('magic', (Math.random() - 0.5) * 1.0, 0.75, (Math.random() - 0.5) * 0.5, 1, 0.25, 1.6, 0.5, 1); } }
+}
+
+// ------------------------------------------------------------------ CENA 2: GOLPE DE ESPADA
+const sw = (() => {
+  const hero = dummyMan(0x5d8ad6, -1.1), foe = dummyMan(0x8a6f5c, 1.0);
+  const sword = box(0.08, 0.9, 0.08, lam(0xd0d6e2), 0.45, 1.3, 0.1, hero.g); sword.rotation.z = -0.6;
+  const bar = makeBar(foe.g, 2.05);
+  const splatMat = new THREE.MeshLambertMaterial({ color: 0x7a0c18, transparent: true, opacity: 0.85 });
+  const splat = new THREE.Mesh(new THREE.CircleGeometry(0.5, 20), splatMat); splat.rotation.x = -PI / 2; splat.position.set(1.0, 0.01, 0.1); splat.scale.setScalar(0.001); scene.add(splat);
+  return { hero, foe, sword, bar, splat, hp: 100, flashT: 0, kb: 0, dead: false };
+})();
+const SWORD_STEPS = ['Inimigo pisca branco', 'Som de "clang"', 'Faíscas no impacto', 'Barra de vida', 'Empurrão (knockback)', 'Sangue conforme a vida cai', 'Animação de morte'];
+function swordReset() { sw.hp = 100; sw.dead = false; sw.foe.g.rotation.z = 0; sw.foe.g.position.set(1.0, 0, 0); sw.bar.set(1); sw.bar.lagV = 1; sw.splat.scale.setScalar(0.001); sw.foe.mat.color.copy(sw.foe.base); }
+function swordPlay(on) {
+  if (sw.dead) swordReset();
+  sw.bar.g.visible = !!on[3];
+  anim(0.12, (u) => { sw.hero.g.position.x = -1.1 + 0.55 * E.outCubic(u); sw.sword.rotation.z = -0.6 - 1.6 * E.outCubic(u); });
+  anim(0.25, (u) => { sw.hero.g.position.x = -0.55 - 0.55 * E.inOutCubic(u); sw.sword.rotation.z = -2.2 + 1.6 * u; }, 0.12);
+  at(0.12, () => {
+    sw.hp = Math.max(0, sw.hp - 25); sw.bar.set(sw.hp / 100);
+    if (on[0]) sw.flashT = 0.09;
+    if (on[1]) SFX.clang();
+    if (on[2]) burst('spark', 0.75, 1.1, 0.2, 18, 4, 0.35, 1.5, 1);
+    if (on[4]) { sw.kb = 1; anim(0.18, (u) => { sw.foe.g.position.x = 1.0 + 0.5 * E.outCubic(u); }); anim(0.5, (u) => { sw.foe.g.position.x = 1.5 - 0.5 * E.inOutCubic(u); }, 0.3); }
+    if (on[5]) { const lost = 1 - sw.hp / 100; burst('blood', 0.85, 1.0, 0.1, 6 + Math.round(10 * lost), 2.5, 0.6, 1, 1); anim(0.3, (u) => { sw.splat.scale.setScalar(0.001 + lost * 1.1 * E.outCubic(u) + (lost - 0.25) * 1.1 * (1 - E.outCubic(u))); }); }
+    if (sw.hp <= 0) {
+      if (on[6]) { at(0.15, () => { anim(0.45, (u) => { sw.foe.g.rotation.z = -PI / 2 * E.outBounce(u); }); SFX.thump(); addShake(0.25); burst('dust', 1.6, 0.1, 0, 10, 1.5, 0.6, 0.6, 1); }); }
+      sw.dead = true; at(1.8, () => { if (sw.dead) swordReset(); });
+    }
+  });
+}
+function swordSim(dt) {
+  if (sw.flashT > 0) { sw.flashT -= dt; sw.foe.mat.color.setRGB(3, 3, 3); if (sw.flashT <= 0) sw.foe.mat.color.copy(sw.foe.base); }
+}
+
+// ------------------------------------------------------------------ CENA 3: FEITIÇO DE TERRA
+const sp = (() => {
+  const caster = dummyMan(0x6b9c5a, -2.6), foe = dummyMan(0x8a6f5c, 2.4);
+  const bar = makeBar(foe.g, 2.05);
+  const stone = lam(0x7a6650);
+  const pillars = [];
+  for (let i = 0; i < 6; i++) { const m = new THREE.Mesh(new THREE.ConeGeometry(0.32, 1.6, 6), stone); m.castShadow = true; m.visible = false; scene.add(m); pillars.push(m); }
+  const crackMat = new THREE.MeshBasicMaterial({ color: 0x1a120c });
+  const crack = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 0.02, 0.07), crackMat, 40); crack.count = 0; scene.add(crack);
+  const stunStars = []; for (let i = 0; i < 3; i++) { const m = new THREE.Mesh(starGeo, add(0xffe27a)); m.scale.setScalar(0.1); m.visible = false; foe.g.add(m); stunStars.push(m); }
+  return { caster, foe, bar, pillars, crack, stunStars, casts: 0, stun: 0, vy: 0, air: false };
+})();
+const SPELL_STEPS = ['Lançamento básico (só dano)', 'Pilar de pedra', 'Rachadura correndo', 'Ronco + tremor de tela', 'Números de dano + congelar', 'Lançar no ar + atordoar', 'Explosão de pedra e poeira', 'Entulho fica, pilar desmorona', 'Trilha de pilares', 'Crítico'];
+const crackPts = []; { let x = -2.2, z = 0; for (let i = 0; i < 40; i++) { x += 0.115; z += (Math.random() - 0.5) * 0.12; z *= 0.9; crackPts.push([x, z, (Math.random() - 0.5) * 0.9]); } }
+function spellReset() { sp.crack.count = 0; rubble.count = 0; rubble.instanceMatrix.needsUpdate = true; sp.pillars.forEach((p) => (p.visible = false)); sp.foe.g.position.set(2.4, 0, 0); sp.stun = 0; sp.air = false; }
+function spellPlay(on) {
+  spellReset(); sp.casts++;
+  const crit = on[9] && sp.casts % 3 === 0; // a cada 3 lançamentos, crítico
+  sp.bar.set(1); sp.bar.lagV = 1;
+  anim(0.2, (u) => { sp.caster.arm.rotation.z = -2.2 * Math.sin(u * PI); sp.caster.arm.position.y = 1.0 + 0.2 * Math.sin(u * PI); });
+  let tHit = 0.2;
+  if (on[2]) { // rachadura correndo até o alvo
+    const dur = 0.4; tHit = 0.2 + dur;
+    anim(dur, (u) => {
+      const n = Math.floor(u * crackPts.length);
+      for (let i = sp.crack.count; i < n; i++) { const c = crackPts[i]; dummy.position.set(c[0], 0.012, c[1]); dummy.rotation.set(0, c[2], 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); sp.crack.setMatrixAt(i, dummy.matrix); }
+      sp.crack.count = n; sp.crack.instanceMatrix.needsUpdate = true; dummy.rotation.set(0, 0, 0);
+    }, 0.2);
+    if (on[3]) at(0.2, () => SFX.rumble(dur + 0.3));
+    if (on[8]) { // trilha de pilares ao longo da rachadura
+      for (let i = 1; i <= 4; i++) at(0.2 + dur * i / 5, () => raisePillar(i, -2.2 + i * 0.92, 0, 0.55, on));
+    }
+  }
+  at(tHit, () => {
+    const dmg = crit ? 85 : 15;
+    sp.bar.set(1 - dmg / 100);
+    if (on[1]) raisePillar(0, 2.4, 0, crit ? 1.5 : 1, on);
+    if (on[3]) { SFX.crunch(crit); addShake(crit ? 0.8 : 0.45); }
+    if (on[4]) { hitStop(crit ? 0.14 : 0.09); floatNum(2.4, 2.4, 0, dmg, crit ? 1 : 0); }
+    if (crit && settings.eff().slowMo) clock.slowMo(0.4, 0.5);
+    if (on[5]) { sp.air = true; sp.vy = crit ? 7 : 5; sp.stun = 1.4; }
+    if (on[6]) { burst('rock', 2.4, 0.3, 0, crit ? 30 : 16, crit ? 6 : 4, 0.9, 3, 1); burst('dust', 2.4, 0.3, 0, crit ? 24 : 12, 2.2, 0.8, 0.8, 1.2); }
+    if (crit) { burst('dust', 0, 0.2, 0, 26, 3.5, 0.9, 0.6, 1.3); burst('rock', 0.5, 0.2, 0, 24, 5, 1, 3, 1); }
+    if (on[7]) addRubble(2.4, 0, crit ? 22 : 12, crit ? 2.2 : 1.4);
+  });
+}
+function raisePillar(i, x, z, scale, on) {
+  const p = sp.pillars[i]; p.visible = true; p.position.set(x, 0, z); p.scale.set(scale, 0.001, scale);
+  anim(0.08, (u) => { p.scale.y = scale * E.outBack(u); p.position.y = 0.8 * scale * E.outBack(u); });
+  if (i > 0) { burst('dust', x, 0.1, z, 4, 1.2, 0.5, 0.5, 0.8); if (on[7]) addRubble(x, z, 2, 0.6); }
+  at(0.7, () => {
+    if (on[7]) { // desmorona em pedras
+      p.visible = false; burst('rock', x, 0.8 * scale, z, 10, 2, 0.8, 1, 1); burst('dust', x, 0.3, z, 6, 1, 0.7, 0.4, 1);
+    } else anim(0.35, (u) => { p.position.y = 0.8 * scale * (1 - 2 * u); if (u >= 1) p.visible = false; });
+  });
+}
+function spellSim(dt) {
+  if (sp.air) { sp.vy -= 18 * dt; sp.foe.g.position.y += sp.vy * dt; if (sp.foe.g.position.y <= 0) { sp.foe.g.position.y = 0; sp.air = false; burst('dust', 2.4, 0.1, 0, 8, 1.2, 0.5, 0.4, 1); } }
+  sp.foe.g.rotation.z = sp.air ? Math.sin(simNow * 12) * 0.25 : 0;
+  if (sp.stun > 0) { sp.stun -= dt; }
+  sp.stunStars.forEach((m, i) => { m.visible = sp.stun > 0; const a = simNow * 5 + i * 2.09; m.position.set(Math.cos(a) * 0.35, 1.9, Math.sin(a) * 0.35); m.quaternion.copy(camera.quaternion); });
+}
+
+// ------------------------------------------------------------------ cenas, UI e loop
+const SCENES = {
+  bau: { title: 'Baú', steps: CHEST_STEPS, play: chestPlay, show: [chest.root], cam: [0, 3.2, 6.2, 0, 0.6, 0] },
+  golpe: { title: 'Golpe de espada', steps: SWORD_STEPS, play: swordPlay, show: [sw.hero.g, sw.foe.g, sw.splat, sw.bar.g], cam: [0, 3.2, 6.6, 0, 0.9, 0] },
+  feitico: { title: 'Feitiço de terra', steps: SPELL_STEPS, play: spellPlay, show: [sp.caster.g, sp.foe.g, sp.crack, ...sp.pillars, rubble, sp.bar.g], cam: [0, 5.5, 9, 0, 0.6, 0] },
+};
+const state = { cur: 'bau', on: { bau: CHEST_STEPS.map(() => true), golpe: SWORD_STEPS.map(() => true), feitico: SPELL_STEPS.map(() => true) } };
+const allSceneObjs = new Set(Object.values(SCENES).flatMap((s) => s.show));
+const panel = document.getElementById('steps'), tabs = document.getElementById('tabs');
+function setScene(k) {
+  state.cur = k; agenda.length = 0; anims.length = 0;
+  allSceneObjs.forEach((o) => (o.visible = false));
+  SCENES[k].show.forEach((o) => { if (!sp.pillars.includes(o)) o.visible = true; });
+  for (const p of Object.values(P)) p.pool.clear();
+  stars.forEach((s) => (s.m.visible = false));
+  chestReset(); swordReset(); spellReset();
+  const c = SCENES[k].cam; camBase.x = c[0]; camBase.y = c[1]; camBase.z = c[2];
+  camera.position.set(c[0], c[1], c[2]); camera.lookAt(c[3], c[4], c[5]); camBase.rz = camera.rotation.z;
+  [...tabs.children].forEach((b) => b.classList.toggle('on', b.dataset.k === k));
+  drawSteps();
+}
+function drawSteps() {
+  const s = SCENES[state.cur], on = state.on[state.cur];
+  panel.innerHTML = '';
+  s.steps.forEach((name, i) => {
+    const l = document.createElement('label'); l.className = 'step' + (on[i] ? ' on' : '');
+    const key = (i + 1) % 10;
+    l.innerHTML = `<input type="checkbox" ${on[i] ? 'checked' : ''}><kbd>${key}</kbd><span>${name}</span>`;
+    if (state.cur === 'feitico' && i === 0) { l.querySelector('input').disabled = true; }
+    l.querySelector('input').onchange = (e) => { on[i] = e.target.checked; l.classList.toggle('on', on[i]); };
+    panel.appendChild(l);
+  });
+}
+function setAll(v) { const on = state.on[state.cur]; for (let i = 0; i < on.length; i++) on[i] = v || (state.cur === 'feitico' && i === 0); drawSteps(); }
+function fire() { ac(); SCENES[state.cur].play(state.on[state.cur]); }
+for (const k in SCENES) { const b = document.createElement('button'); b.textContent = SCENES[k].title; b.dataset.k = k; b.onclick = () => setScene(k); tabs.appendChild(b); }
+document.getElementById('go').onclick = fire;
+document.getElementById('all').onclick = () => setAll(true);
+document.getElementById('none').onclick = () => setAll(false);
+const rm = document.getElementById('rm');
+rm.onchange = () => { settings.reduceMotion = rm.checked ? true : null; };
+canvas.addEventListener('pointerup', fire);
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); fire(); return; }
+  const n = '1234567890'.indexOf(e.key);
+  const on = state.on[state.cur];
+  if (n >= 0 && n < on.length && !(state.cur === 'feitico' && n === 0)) { on[n] = !on[n]; drawSteps(); }
+});
+
+let W = 1, H = 1;
+const wrap = document.getElementById('wrap');
+function resize() { W = wrap.clientWidth; H = wrap.clientHeight; renderer.setSize(W, H, false); camera.aspect = W / H; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+function simulate(dt) {
+  simNow += dt; runAgenda(); runAnims();
+  chestSim(dt); swordSim(dt); spellSim(dt);
+}
+const info = document.getElementById('info');
+let last = performance.now(), statT = 0, frameMs = 0;
+renderer.setAnimationLoop((tMs) => {
+  const t0 = performance.now();
+  const dt = Math.min((tMs - last) / 1000, 0.25); last = tMs;
+  clock.step(dt, simulate);
+  updatePools(clock.frameDt); updateStars(clock.frameDt);
+  shake.update(dt); floaters.update(dt); domF.sync();
+  sw.bar.update(dt); sp.bar.update(dt);
+  J.applyShakeToCamera(camera, camBase, shake, 0.28, 0.035);
+  renderer.render(scene, camera);
+  stats.push(performance.now() - t0);
+  statT += dt;
+  if (statT > 1) {
+    statT = 0; const s = stats.summary(); let parts = 0; for (const k in P) parts += P[k].pool.count;
+    info.textContent = `CPU/quadro: média ${s.mean.toFixed(2)} ms · p95 ${s.p95.toFixed(2)} ms · partículas ${parts} · draw calls ${renderer.info.render.calls}`;
+  }
+});
+setScene('bau');
+window.__lab = { fire, setScene, state, P, clock, sw, sp, chest };
+</script></body></html>
